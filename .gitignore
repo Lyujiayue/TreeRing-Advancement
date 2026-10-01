@@ -136,3 +136,6 @@ tmp*.png
 wandb/
 fid_outputs/
 *.pt
+optim_utils copy.py
+run_tree_ring_watermark_imagenet copy.py
+significance_trial_files/
