@@ -1,11 +1,10 @@
 import argparse
 import wandb
 import copy
+from pathlib import Path
 from tqdm import tqdm
-from statistics import mean, stdev
+from statistics import mean
 from sklearn import metrics
-from PIL import Image
-from torchvision import transforms
 import torch
 import numpy as np
 
@@ -13,42 +12,82 @@ from guided_diffusion.script_util import (
     NUM_CLASSES,
     model_and_diffusion_defaults,
     create_model_and_diffusion,
+    create_gaussian_diffusion,
     add_dict_to_argparser,
     args_to_dict,
 )
 
 from optim_utils import *
 from io_utils import *
-# 新增：导入显著性检测函数
-from significance_detection import get_saliency_weight_from_tensor
+
+
+def measure_image_quality(reference_image, watermarked_image, saliency_map):
+    reference = np.asarray(reference_image, dtype=np.float32) / 255.0
+    watermarked = np.asarray(watermarked_image, dtype=np.float32) / 255.0
+    squared_error = np.mean((reference - watermarked) ** 2, axis=-1)
+    mse = float(squared_error.mean())
+    psnr = float('inf') if mse == 0 else float(10 * np.log10(1.0 / mse))
+
+    saliency = np.clip(np.asarray(saliency_map, dtype=np.float32), 0, 1)
+    salient_weight = float(saliency.sum())
+    background = 1.0 - saliency
+    background_weight = float(background.sum())
+    salient_mse = (
+        float((squared_error * saliency).sum() / salient_weight)
+        if salient_weight > 1e-8 else mse
+    )
+    background_mse = (
+        float((squared_error * background).sum() / background_weight)
+        if background_weight > 1e-8 else mse
+    )
+    return psnr, salient_mse, background_mse
 
 
 def main(args):
+    if args.end <= args.start:
+        raise ValueError('--end must be greater than --start')
+    if args.num_images <= 0:
+        raise ValueError('--num_images must be positive')
+    if args.saliency_preview_steps <= 0:
+        raise ValueError('--saliency_preview_steps must be positive')
+
     table = None
     if args.with_tracking:
         wandb.init(project='diffusion_watermark', name=args.run_name, tags=['latent_watermark_fourier_openai'])
         wandb.config.update(args)
-        table = wandb.Table(columns=['gen_no_w', 'gen_w', 'no_w_metric', 'w_metric'])
+        table = wandb.Table(columns=[
+            'gen_no_w', 'gen_w', 'no_w_metric', 'w_metric', 'psnr',
+            'salient_mse', 'background_mse',
+        ])
 
     # load diffusion model
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
 
-    # --- 核心修改：双扩散器初始化 ---
-    # 1. 配置正式生成的扩散器 (默认步数，如 50 步)
     args.timestep_respacing = f"ddim{args.num_inference_steps}"
     model, diffusion = create_model_and_diffusion(
         **args_to_dict(args, model_and_diffusion_defaults().keys())
     )
 
-    # 2. 配置快速预览的扩散器 (强制 10 步)
-    args_fast = copy.deepcopy(args)
-    args_fast.timestep_respacing = "ddim10"
-    _, diffusion_fast = create_model_and_diffusion(
-        **args_to_dict(args_fast, model_and_diffusion_defaults().keys())
-    )
-    # ------------------------------
+    diffusion_fast = None
+    if not args.disable_saliency:
+        diffusion_fast = create_gaussian_diffusion(
+            steps=args.diffusion_steps,
+            learn_sigma=args.learn_sigma,
+            noise_schedule=args.noise_schedule,
+            use_kl=args.use_kl,
+            predict_xstart=args.predict_xstart,
+            rescale_timesteps=args.rescale_timesteps,
+            rescale_learned_sigmas=args.rescale_learned_sigmas,
+            timestep_respacing=f"ddim{args.saliency_preview_steps}",
+        )
 
-    model.load_state_dict(torch.load(args.model_path))
+    model_path = Path(args.model_path).expanduser()
+    if not model_path.is_file():
+        raise FileNotFoundError(
+            f'Model checkpoint not found: {model_path}. '
+            'Pass --model_path or update the model JSON file.'
+        )
+    model.load_state_dict(torch.load(model_path, map_location=device))
     model.to(device)
     if args.use_fp16:
         model.convert_to_fp16()
@@ -58,9 +97,11 @@ def main(args):
     # ground-truth patch
     gt_patch = get_watermarking_pattern(None, args, device, shape)
 
-    results = []
     no_w_metrics = []
     w_metrics = []
+    psnr_values = []
+    salient_mse_values = []
+    background_mse_values = []
 
     for i in tqdm(range(args.start, args.end)):
         seed = i + args.gen_seed
@@ -73,7 +114,6 @@ def main(args):
             )
             model_kwargs["y"] = classes
 
-        # 1. Generation without watermarking (Standard Baseline)
         set_random_seed(seed)
         init_latents_no_w = torch.randn(*shape, device=device)
         outputs_no_w = diffusion.ddim_sample_loop(
@@ -84,36 +124,31 @@ def main(args):
                     device=device,
                     return_image=True,
                 )
-        orig_image_no_w = outputs_no_w[0]
-
-        # 2. Adaptive Watermarking Preparation
         init_latents_w = copy.deepcopy(init_latents_no_w)
 
-        # --- 创新点 1：第一阶段 - 使用快速扩散器获取预览图像 ---
-        with torch.no_grad():
-            outputs_tmp = diffusion_fast.ddim_sample_loop( # 使用 10 步扩散器
-                model=model,
-                shape=shape,
-                noise=init_latents_w,
-                model_kwargs=model_kwargs,
-                device=device,
-                clip_denoised=True,
-                return_image=True,
-            )
-        orig_image_tmp = outputs_tmp[0]
+        saliency_map_np = None
+        saliency_map = None
+        if diffusion_fast is not None:
+            from significance_detection import get_saliency_weight_from_tensor
 
-        # 获取显著性权重图 S (1表示显著，0表示背景)
-        saliency_map = get_saliency_weight_from_tensor(orig_image_tmp)
-        saliency_map = torch.from_numpy(saliency_map).to(device).float()
-        # -------------------------------------------------------
+            with torch.no_grad():
+                outputs_tmp = diffusion_fast.ddim_sample_loop(
+                    model=model,
+                    shape=shape,
+                    noise=init_latents_w,
+                    model_kwargs=model_kwargs,
+                    device=device,
+                    clip_denoised=True,
+                    return_image=True,
+                )
+            saliency_map_np = get_saliency_weight_from_tensor(outputs_tmp)
+            saliency_map = torch.from_numpy(saliency_map_np).to(device=device)
 
         # get watermarking mask
         watermarking_mask = get_watermarking_mask(init_latents_w, args, device)
 
-        # --- 创新点 1：第二阶段 - 自适应噪声注入 ---
         init_latents_w = inject_watermark(init_latents_w, watermarking_mask, gt_patch, args, saliency_map=saliency_map)
 
-        # 正式生成带水印图像 (使用原始 50 步扩散器)
         outputs_w = diffusion.ddim_sample_loop(
                     model=model,
                     shape=shape,
@@ -122,38 +157,63 @@ def main(args):
                     device=device,
                     return_image=True,
                 )
-        orig_image_w = outputs_w[0]
+        for image_index, (orig_image_no_w, orig_image_w) in enumerate(zip(outputs_no_w, outputs_w)):
+            orig_image_no_w_auged, orig_image_w_auged = image_distortion(
+                orig_image_no_w, orig_image_w, seed + image_index, args
+            )
+            reverse_shape = (1, *shape[1:])
+            reverse_model_kwargs = {
+                key: value[image_index:image_index + 1]
+                for key, value in model_kwargs.items()
+            }
 
-        ### test watermark eval
-        orig_image_no_w_auged, orig_image_w_auged = image_distortion(orig_image_no_w, orig_image_w, seed, args)
-
-        reversed_latents_no_w = diffusion.ddim_reverse_sample_loop(
+            reversed_latents_no_w = diffusion.ddim_reverse_sample_loop(
                 model=model,
-                shape=shape,
+                shape=reverse_shape,
                 image=orig_image_no_w_auged,
-                model_kwargs=model_kwargs,
+                model_kwargs=reverse_model_kwargs,
                 device=device,
             )
 
-        reversed_latents_w = diffusion.ddim_reverse_sample_loop(
+            reversed_latents_w = diffusion.ddim_reverse_sample_loop(
                 model=model,
-                shape=shape,
+                shape=reverse_shape,
                 image=orig_image_w_auged,
-                model_kwargs=model_kwargs,
+                model_kwargs=reverse_model_kwargs,
                 device=device,
             )
 
-        no_w_metric, w_metric = eval_watermark(reversed_latents_no_w, reversed_latents_w, watermarking_mask, gt_patch, args)
+            sample_mask = watermarking_mask[image_index:image_index + 1]
+            sample_patch = gt_patch[image_index:image_index + 1]
+            no_w_metric, w_metric = eval_watermark(
+                reversed_latents_no_w, reversed_latents_w,
+                sample_mask, sample_patch, args,
+            )
+            no_w_metrics.append(-no_w_metric)
+            w_metrics.append(-w_metric)
 
-        results.append({'no_w_metric': no_w_metric, 'w_metric': w_metric})
-        no_w_metrics.append(-no_w_metric)
-        w_metrics.append(-w_metric)
+            quality_map = (
+                saliency_map_np[image_index, 0]
+                if saliency_map_np is not None
+                else np.zeros(shape[-2:], dtype=np.float32)
+            )
+            psnr, salient_mse, background_mse = measure_image_quality(
+                orig_image_no_w, orig_image_w, quality_map
+            )
+            psnr_values.append(psnr)
+            salient_mse_values.append(salient_mse)
+            background_mse_values.append(background_mse)
 
-        if args.with_tracking:
-            if (args.reference_model is not None) and (i < args.max_num_log_image):
-                table.add_data(wandb.Image(orig_image_no_w), wandb.Image(orig_image_w), no_w_metric, w_metric)
-            else:
-                table.add_data(None, None, no_w_metric, w_metric)
+            if args.with_tracking:
+                log_images = (
+                    args.reference_model is not None
+                    and len(w_metrics) <= args.max_num_log_image
+                )
+                table.add_data(
+                    wandb.Image(orig_image_no_w) if log_images else None,
+                    wandb.Image(orig_image_w) if log_images else None,
+                    no_w_metric, w_metric, psnr, salient_mse, background_mse,
+                )
 
     # ROC analysis
     preds = no_w_metrics + w_metrics
@@ -164,9 +224,22 @@ def main(args):
     low = tpr[np.where(fpr<.01)[0][-1]]
 
     if args.with_tracking:
-        wandb.log({'Table': table, 'auc': auc, 'acc': acc, 'TPR@1%FPR': low})
+        wandb.log({
+            'Table': table,
+            'auc': auc,
+            'acc': acc,
+            'TPR@1%FPR': low,
+            'psnr': mean(psnr_values),
+            'salient_mse': mean(salient_mse_values),
+            'background_mse': mean(background_mse_values),
+        })
 
     print(f'auc: {auc}, acc: {acc}, TPR@1%FPR: {low}')
+    print(
+        f'psnr: {mean(psnr_values)}, '
+        f'salient_mse: {mean(salient_mse_values)}, '
+        f'background_mse: {mean(background_mse_values)}'
+    )
 
 
 if __name__ == '__main__':
@@ -177,6 +250,7 @@ if __name__ == '__main__':
     parser.add_argument('--end', default=10, type=int)
     parser.add_argument('--image_length', default=512, type=int)
     parser.add_argument('--model_id', default='256x256_diffusion')
+    parser.add_argument('--model_path', default=None)
     parser.add_argument('--with_tracking', action='store_true')
     parser.add_argument('--num_images', default=1, type=int)
     parser.add_argument('--guidance_scale', default=7.5, type=float)
@@ -194,6 +268,11 @@ if __name__ == '__main__':
     parser.add_argument('--w_measurement', default='l1_complex')
     parser.add_argument('--w_injection', default='complex')
     parser.add_argument('--w_pattern_const', default=0, type=float)
+    parser.add_argument('--disable_saliency', action='store_true')
+    parser.add_argument('--saliency_preview_steps', default=10, type=int)
+    parser.add_argument('--saliency_background_strength', default=1.5, type=float)
+    parser.add_argument('--saliency_foreground_strength', default=0.2, type=float)
+    parser.add_argument('--saliency_power', default=2.0, type=float)
     parser.add_argument('--r_degree', default=None, type=float)
     parser.add_argument('--jpeg_ratio', default=None, type=int)
     parser.add_argument('--crop_scale', default=None, type=float)
@@ -204,9 +283,11 @@ if __name__ == '__main__':
     parser.add_argument('--rand_aug', default=0, type=int)
 
     args = parser.parse_args()
+    cli_model_path = args.model_path
     args.__dict__.update(model_and_diffusion_defaults())
     args.__dict__.update(read_json(f'{args.model_id}.json'))
-    args.model_path = "/openbayes/home/tree-ring-watermark/256x256_diffusion.pt"
+    if cli_model_path is not None:
+        args.model_path = cli_model_path
 
     if args.test_num_inference_steps is None:
         args.test_num_inference_steps = args.num_inference_steps
