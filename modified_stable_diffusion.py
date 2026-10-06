@@ -18,7 +18,8 @@ class ModifiedStableDiffusionPipelineOutput(BaseOutput):
 
 
 class ModifiedStableDiffusionPipeline(StableDiffusionPipeline):
-    def __init__(self,
+    def __init__(
+        self,
         vae,
         text_encoder,
         tokenizer,
@@ -26,16 +27,20 @@ class ModifiedStableDiffusionPipeline(StableDiffusionPipeline):
         scheduler,
         safety_checker,
         feature_extractor,
+        image_encoder=None,
         requires_safety_checker: bool = True,
     ):
-        super(ModifiedStableDiffusionPipeline, self).__init__(vae,
-                text_encoder,
-                tokenizer,
-                unet,
-                scheduler,
-                safety_checker,
-                feature_extractor,
-                requires_safety_checker)
+        super().__init__(
+            vae=vae,
+            text_encoder=text_encoder,
+            tokenizer=tokenizer,
+            unet=unet,
+            scheduler=scheduler,
+            safety_checker=safety_checker,
+            feature_extractor=feature_extractor,
+            image_encoder=image_encoder,
+            requires_safety_checker=requires_safety_checker,
+        )
 
     @torch.no_grad()
     def __call__(
@@ -128,16 +133,25 @@ class ModifiedStableDiffusionPipeline(StableDiffusionPipeline):
         do_classifier_free_guidance = guidance_scale > 1.0
 
         # 3. Encode input prompt
-        text_embeddings = self._encode_prompt(
-            prompt, device, num_images_per_prompt, do_classifier_free_guidance, negative_prompt
+        prompt_embeds, negative_prompt_embeds = self.encode_prompt(
+            prompt=prompt,
+            device=device,
+            num_images_per_prompt=num_images_per_prompt,
+            do_classifier_free_guidance=do_classifier_free_guidance,
+            negative_prompt=negative_prompt,
         )
+
+        if do_classifier_free_guidance:
+            text_embeddings = torch.cat([negative_prompt_embeds, prompt_embeds])
+        else:
+            text_embeddings = prompt_embeds
 
         # 4. Prepare timesteps
         self.scheduler.set_timesteps(num_inference_steps, device=device)
         timesteps = self.scheduler.timesteps
 
         # 5. Prepare latent variables
-        num_channels_latents = self.unet.in_channels
+        num_channels_latents = self.unet.config.in_channels
         latents = self.prepare_latents(
             batch_size * num_images_per_prompt,
             num_channels_latents,

@@ -139,3 +139,6 @@ fid_outputs/
 optim_utils copy.py
 run_tree_ring_watermark_imagenet copy.py
 significance_trial_files/
+# Local VS Code settings
+.vscode/
+.local_outputs/

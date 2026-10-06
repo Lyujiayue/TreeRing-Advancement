@@ -32,7 +32,8 @@ def forward_ddim(x_t, alpha_t, alpha_tp1, eps_xt):
 
 
 class InversableStableDiffusionPipeline(ModifiedStableDiffusionPipeline):
-    def __init__(self,
+    def __init__(
+        self,
         vae,
         text_encoder,
         tokenizer,
@@ -40,16 +41,20 @@ class InversableStableDiffusionPipeline(ModifiedStableDiffusionPipeline):
         scheduler,
         safety_checker,
         feature_extractor,
+        image_encoder=None,
         requires_safety_checker: bool = True,
     ):
-        super(InversableStableDiffusionPipeline, self).__init__(vae,
-                text_encoder,
-                tokenizer,
-                unet,
-                scheduler,
-                safety_checker,
-                feature_extractor,
-                requires_safety_checker)
+        super().__init__(
+            vae=vae,
+            text_encoder=text_encoder,
+            tokenizer=tokenizer,
+            unet=unet,
+            scheduler=scheduler,
+            safety_checker=safety_checker,
+            feature_extractor=feature_extractor,
+            image_encoder=image_encoder,
+            requires_safety_checker=requires_safety_checker,
+        )
 
         self.forward_diffusion = partial(self.backward_diffusion, reverse_process=True)
     
@@ -60,7 +65,7 @@ class InversableStableDiffusionPipeline(ModifiedStableDiffusionPipeline):
         batch_size = 1
         device = self._execution_device
 
-        num_channels_latents = self.unet.in_channels
+        num_channels_latents = self.unet.config.in_channels
 
         latents = self.prepare_latents(
             batch_size,

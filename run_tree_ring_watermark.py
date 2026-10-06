@@ -1,14 +1,17 @@
 import argparse
-import wandb
+try:
+    import wandb
+except ImportError:
+    wandb = None
 import copy
 from tqdm import tqdm
 from statistics import mean, stdev
 from sklearn import metrics
-
 import torch
-
+import json
+from pathlib import Path
 from inverse_stable_diffusion import InversableStableDiffusionPipeline
-from diffusers import DPMSolverMultistepScheduler
+from diffusers import DDIMScheduler
 import open_clip
 from optim_utils import *
 from io_utils import *
@@ -17,20 +20,35 @@ from io_utils import *
 def main(args):
     table = None
     if args.with_tracking:
+        if wandb is None:
+            raise RuntimeError(
+                "wandb is not installed. Run without --with_tracking "
+                "or install wandb explicitly."
+            )
         wandb.init(project='diffusion_watermark', name=args.run_name, tags=['tree_ring_watermark'])
         wandb.config.update(args)
         table = wandb.Table(columns=['gen_no_w', 'no_w_clip_score', 'gen_w', 'w_clip_score', 'prompt', 'no_w_metric', 'w_metric'])
     
     # load diffusion model
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
-    
-    scheduler = DPMSolverMultistepScheduler.from_pretrained(args.model_id, subfolder='scheduler')
+    torch_dtype = torch.float16 if device == 'cuda' else torch.float32
+
+    scheduler = DDIMScheduler.from_pretrained(
+        args.model_id,
+        subfolder='scheduler',
+        local_files_only=True,
+    )
+
+    pipeline_kwargs = {
+        'scheduler': scheduler,
+        'torch_dtype': torch_dtype,
+    }
+
     pipe = InversableStableDiffusionPipeline.from_pretrained(
         args.model_id,
-        scheduler=scheduler,
-        torch_dtype=torch.float16,
-        revision='fp16',
-        )
+        local_files_only=True,
+        **pipeline_kwargs,
+    )
     pipe = pipe.to(device)
 
     # reference model
@@ -148,8 +166,8 @@ def main(args):
             else:
                 table.add_data(None, w_no_sim, None, w_sim, current_prompt, no_w_metric, w_metric)
 
-            clip_scores.append(w_no_sim)
-            clip_scores_w.append(w_sim)
+        clip_scores.append(w_no_sim)
+        clip_scores_w.append(w_sim)
 
     # roc
     preds = no_w_metrics +  w_metrics
@@ -169,12 +187,33 @@ def main(args):
     print(f'clip_score_mean: {mean(clip_scores)}')
     print(f'w_clip_score_mean: {mean(clip_scores_w)}')
     print(f'auc: {auc}, acc: {acc}, TPR@1%FPR: {low}')
+    output_dir = Path(".local_outputs") / "runs"
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    summary = {
+        "run_name": args.run_name,
+        "num_samples": len(results),
+        "clip_score_mean": mean(clip_scores),
+        "w_clip_score_mean": mean(clip_scores_w),
+        "auc": float(auc),
+        "acc": float(acc),
+        "tpr_at_1pct_fpr": float(low),
+        "results": results,
+    }
+
+    output_path = output_dir / f"{args.run_name}.json"
+
+    with open(output_path, "w", encoding="utf-8") as f:
+        json.dump(summary, f, indent=2)
+
+    print(f"results saved to: {output_path}")
 
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='diffusion watermark')
     parser.add_argument('--run_name', default='test')
     parser.add_argument('--dataset', default='Gustavosta/Stable-Diffusion-Prompts')
+    parser.add_argument('--prompt_file', default=None)
     parser.add_argument('--start', default=0, type=int)
     parser.add_argument('--end', default=10, type=int)
     parser.add_argument('--image_length', default=512, type=int)

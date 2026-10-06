@@ -95,13 +95,25 @@ def measure_similarity(images, prompt, model, clip_preprocess, tokenizer, device
 
 
 def get_dataset(args):
+    prompt_file = getattr(args, 'prompt_file', None)
+
+    if prompt_file:
+        with open(prompt_file, encoding='utf-8') as f:
+            prompts = [line.strip() for line in f if line.strip()]
+
+        if not prompts:
+            raise ValueError(f'No prompts found in {prompt_file}')
+
+        dataset = [{'Prompt': prompt} for prompt in prompts]
+        return dataset, 'Prompt'
+
     from datasets import load_dataset
 
     if 'laion' in args.dataset:
         dataset = load_dataset(args.dataset)['train']
         prompt_key = 'TEXT'
     elif 'coco' in args.dataset:
-        with open('fid_outputs/coco/meta_data.json') as f:
+        with open('fid_outputs/coco/meta_data.json', encoding='utf-8') as f:
             dataset = json.load(f)
             dataset = dataset['annotations']
             prompt_key = 'caption'
@@ -110,7 +122,6 @@ def get_dataset(args):
         prompt_key = 'Prompt'
 
     return dataset, prompt_key
-
 
 def circle_mask(size=64, r=10, x_offset=0, y_offset=0):
     x0 = y0 = size // 2
