@@ -142,3 +142,6 @@ significance_trial_files/
 # Local VS Code settings
 .vscode/
 .local_outputs/
+
+# Local experiment data and transferred datasets
+.local_data/
