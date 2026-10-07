@@ -4,6 +4,7 @@ try:
 except ImportError:
     wandb = None
 import copy
+import time
 from tqdm import tqdm
 from statistics import mean, stdev
 from sklearn import metrics
@@ -15,9 +16,43 @@ from diffusers import DDIMScheduler
 import open_clip
 from optim_utils import *
 from io_utils import *
+from experiment_records import (
+    SCHEMA_VERSION,
+    append_jsonl,
+    collect_environment,
+    describe_prompt_file,
+    get_git_state,
+    namespace_to_dict,
+    utc_now_iso,
+    write_json,
+    write_jsonl,
+)
 
 
 def main(args):
+    run_started_at = utc_now_iso()
+    run_started_perf = time.perf_counter()
+    repo_dir = Path(__file__).resolve().parent
+    output_dir = repo_dir / ".local_outputs" / "runs"
+    output_path = output_dir / f"{args.run_name}.json"
+    samples_path = output_dir / f"{args.run_name}.samples.jsonl"
+
+    existing_outputs = [
+        path for path in (output_path, samples_path) if path.exists()
+    ]
+    if existing_outputs and not args.overwrite_output:
+        existing_names = ", ".join(
+            str(path) for path in existing_outputs
+        )
+        raise FileExistsError(
+            "Output already exists. Choose a new --run_name or use "
+            f"--overwrite_output explicitly: {existing_names}"
+        )
+
+    if args.overwrite_output:
+        for path in existing_outputs:
+            path.unlink()
+
     table = None
     if args.with_tracking:
         if wandb is None:
@@ -32,6 +67,13 @@ def main(args):
     # load diffusion model
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
     torch_dtype = torch.float16 if device == 'cuda' else torch.float32
+    environment = collect_environment(torch)
+    environment.update({
+        "device": device,
+        "torch_dtype": str(torch_dtype),
+    })
+    git_state = get_git_state(repo_dir)
+    prompt_source = describe_prompt_file(args.prompt_file)
 
     scheduler = DDIMScheduler.from_pretrained(
         args.model_id,
@@ -70,8 +112,10 @@ def main(args):
     clip_scores_w = []
     no_w_metrics = []
     w_metrics = []
+    write_jsonl(samples_path, [])
 
     for i in tqdm(range(args.start, args.end)):
+        sample_started_perf = time.perf_counter()
         seed = i + args.gen_seed
         
         current_prompt = dataset[i][prompt_key]
@@ -152,9 +196,22 @@ def main(args):
             w_no_sim = 0
             w_sim = 0
 
-        results.append({
-            'no_w_metric': no_w_metric, 'w_metric': w_metric, 'w_no_sim': w_no_sim, 'w_sim': w_sim,
-        })
+        sample_record = {
+            "sample_id": f"{args.run_name}:{i}",
+            "sample_index": i,
+            "prompt": current_prompt,
+            "generation_seed": seed,
+            "watermark_seed": args.w_seed,
+            "no_w_metric": no_w_metric,
+            "w_metric": w_metric,
+            "no_w_score": -no_w_metric,
+            "w_score": -w_metric,
+            "w_no_sim": w_no_sim,
+            "w_sim": w_sim,
+            "sample_duration_seconds": time.perf_counter() - sample_started_perf,
+        }
+        results.append(sample_record)
+        append_jsonl(samples_path, sample_record)
 
         no_w_metrics.append(-no_w_metric)
         w_metrics.append(-w_metric)
@@ -187,31 +244,50 @@ def main(args):
     print(f'clip_score_mean: {mean(clip_scores)}')
     print(f'w_clip_score_mean: {mean(clip_scores_w)}')
     print(f'auc: {auc}, acc: {acc}, TPR@1%FPR: {low}')
-    output_dir = Path(".local_outputs") / "runs"
-    output_dir.mkdir(parents=True, exist_ok=True)
+    run_completed_at = utc_now_iso()
+    run_duration_seconds = time.perf_counter() - run_started_perf
 
-    summary = {
-        "run_name": args.run_name,
-        "num_samples": len(results),
+    run_metrics = {
         "clip_score_mean": mean(clip_scores),
         "w_clip_score_mean": mean(clip_scores_w),
         "auc": float(auc),
-        "acc": float(acc),
+        "oracle_max_balanced_accuracy": float(acc),
         "tpr_at_1pct_fpr": float(low),
+    }
+
+    summary = {
+        "schema_version": SCHEMA_VERSION,
+        "run_name": args.run_name,
+        "num_samples": len(results),
+        "started_at_utc": run_started_at,
+        "completed_at_utc": run_completed_at,
+        "duration_seconds": run_duration_seconds,
+        "git": git_state,
+        "environment": environment,
+        "prompt_source": prompt_source,
+        "parameters": namespace_to_dict(args),
+        "metrics": run_metrics,
+        "clip_score_mean": run_metrics["clip_score_mean"],
+        "w_clip_score_mean": run_metrics["w_clip_score_mean"],
+        "auc": run_metrics["auc"],
+        "acc": run_metrics["oracle_max_balanced_accuracy"],
+        "oracle_max_balanced_accuracy": (
+            run_metrics["oracle_max_balanced_accuracy"]
+        ),
+        "tpr_at_1pct_fpr": run_metrics["tpr_at_1pct_fpr"],
         "results": results,
     }
 
-    output_path = output_dir / f"{args.run_name}.json"
-
-    with open(output_path, "w", encoding="utf-8") as f:
-        json.dump(summary, f, indent=2)
+    write_json(output_path, summary)
 
     print(f"results saved to: {output_path}")
+    print(f"sample records saved to: {samples_path}")
 
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='diffusion watermark')
     parser.add_argument('--run_name', default='test')
+    parser.add_argument('--overwrite_output', action='store_true')
     parser.add_argument('--dataset', default='Gustavosta/Stable-Diffusion-Prompts')
     parser.add_argument('--prompt_file', default=None)
     parser.add_argument('--start', default=0, type=int)
