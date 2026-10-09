@@ -8,14 +8,27 @@ from types import SimpleNamespace
 from experiment_records import (
     SCHEMA_VERSION,
     append_jsonl,
+    build_sample_identity,
     describe_prompt_file,
+    expected_run_name,
     namespace_to_dict,
+    source_row_id_for_sample,
+    validate_attack_configuration,
+    validate_prompt_source,
+    validate_run_name,
+    validate_sample_range,
     write_json,
     write_jsonl,
 )
 
 
 class ExperimentRecordTests(unittest.TestCase):
+    def test_schema_version_is_v2(self):
+        self.assertEqual(
+            SCHEMA_VERSION,
+            "treering-experiment-v2",
+        )
+
     def test_describe_prompt_file_records_hash_and_count(self):
         with tempfile.TemporaryDirectory() as temporary_directory:
             path = Path(temporary_directory) / "prompts.txt"
@@ -45,6 +58,197 @@ class ExperimentRecordTests(unittest.TestCase):
         self.assertEqual(converted["values"], [1, 2])
         json.dumps(converted)
 
+    def test_source_row_id_for_frozen_splits(self):
+        self.assertEqual(
+            source_row_id_for_sample("formal", 0),
+            0,
+        )
+        self.assertEqual(
+            source_row_id_for_sample("formal", 999),
+            999,
+        )
+        self.assertEqual(
+            source_row_id_for_sample("pilot", 0),
+            1000,
+        )
+        self.assertEqual(
+            source_row_id_for_sample("pilot", 199),
+            1199,
+        )
+        self.assertEqual(
+            source_row_id_for_sample("development", 0),
+            1200,
+        )
+        self.assertEqual(
+            source_row_id_for_sample("development", 31),
+            1231,
+        )
+
+        with self.assertRaises(ValueError):
+            source_row_id_for_sample("unknown", 0)
+
+        with self.assertRaises(ValueError):
+            source_row_id_for_sample("formal", -1)
+        with self.assertRaises(ValueError):
+            source_row_id_for_sample("development", 32)
+
+    def test_validate_sample_range_uses_frozen_split_bounds(self):
+        self.assertEqual(
+            validate_sample_range("development", 0, 1),
+            {
+                "start": 0,
+                "end_exclusive": 1,
+                "count": 1,
+            },
+        )
+        self.assertEqual(
+            validate_sample_range("development", 0, 32),
+            {
+                "start": 0,
+                "end_exclusive": 32,
+                "count": 32,
+            },
+        )
+
+        for start, end in ((-1, 1), (0, 0), (2, 1), (0, 33)):
+            with self.subTest(start=start, end=end):
+                with self.assertRaises(ValueError):
+                    validate_sample_range("development", start, end)
+
+    def test_run_name_matches_explicit_identity(self):
+        expected = expected_run_name(
+            "original_tree_ring",
+            "development",
+            1,
+            "clean",
+        )
+        self.assertEqual(
+            expected,
+            "original_development_r1_clean",
+        )
+        self.assertEqual(
+            validate_run_name(
+                expected,
+                "original_tree_ring",
+                "development",
+                1,
+                "clean",
+            ),
+            expected,
+        )
+
+        with self.assertRaises(ValueError):
+            validate_run_name(
+                "wrong_name",
+                "original_tree_ring",
+                "development",
+                1,
+                "clean",
+            )
+
+    def test_build_sample_identity_records_required_fields(self):
+        identity = build_sample_identity(
+            prompt_split="development",
+            sample_index=7,
+            method_name="original_tree_ring",
+            replicate_id=1,
+            protocol_version="v1",
+            watermark_key_id="treering-rand-wseed-999999",
+            attack_name="clean",
+        )
+
+        self.assertEqual(
+            identity,
+            {
+                "source_row_id": 1207,
+                "prompt_split": "development",
+                "method_name": "original_tree_ring",
+                "attack_name": "clean",
+                "replicate_id": 1,
+                "protocol_version": "v1",
+                "watermark_key_id": "treering-rand-wseed-999999",
+            },
+        )
+
+    def test_build_sample_identity_rejects_invalid_metadata(self):
+        common = {
+            "prompt_split": "development",
+            "sample_index": 0,
+            "method_name": "original_tree_ring",
+            "attack_name": "clean",
+            "replicate_id": 1,
+            "protocol_version": "v1",
+            "watermark_key_id": "treering-rand-wseed-999999",
+        }
+
+        for field_name, invalid_value in (
+            ("method_name", "original"),
+            ("replicate_id", 0),
+            ("protocol_version", ""),
+            ("watermark_key_id", ""),
+            ("attack_name", "unknown"),
+        ):
+            invalid = dict(common)
+            invalid[field_name] = invalid_value
+
+            with self.subTest(field_name=field_name):
+                with self.assertRaises(ValueError):
+                    build_sample_identity(**invalid)
+
+    def test_validate_attack_configuration_rejects_mismatch(self):
+        valid_configurations = (
+            ("clean", {}, {}),
+            ("rotation", {"r_degree": 75}, {"r_degree": 75}),
+            ("jpeg", {"jpeg_ratio": 25}, {"jpeg_ratio": 25}),
+            (
+                "crop",
+                {"crop_scale": 0.75, "crop_ratio": 0.75},
+                {"crop_scale": 0.75, "crop_ratio": 0.75},
+            ),
+            (
+                "gaussian_blur",
+                {"gaussian_blur_r": 4},
+                {"gaussian_blur_r": 4},
+            ),
+            (
+                "gaussian_noise",
+                {"gaussian_std": 0.1},
+                {"gaussian_std": 0.1},
+            ),
+            (
+                "brightness",
+                {"brightness_factor": 6},
+                {"brightness_factor": 6},
+            ),
+        )
+        for attack_name, arguments, expected in valid_configurations:
+            with self.subTest(attack_name=attack_name):
+                self.assertEqual(
+                    validate_attack_configuration(
+                        attack_name,
+                        **arguments,
+                    ),
+                    expected,
+                )
+
+        with self.assertRaises(ValueError):
+            validate_attack_configuration(
+                "clean",
+                r_degree=75,
+            )
+
+        with self.assertRaises(ValueError):
+            validate_attack_configuration(
+                "rotation",
+                r_degree=30,
+            )
+
+        with self.assertRaises(ValueError):
+            validate_attack_configuration(
+                "clean",
+                rand_aug=1,
+            )
+
     def test_json_and_jsonl_writers(self):
         with tempfile.TemporaryDirectory() as temporary_directory:
             output = Path(temporary_directory)
@@ -72,6 +276,53 @@ class ExperimentRecordTests(unittest.TestCase):
             self.assertEqual(
                 [sample["sample_id"] for sample in samples],
                 [0, 1, 2],
+            )
+
+    def test_validate_prompt_source_matches_frozen_split(self):
+        development = {
+            "path": "sdp_dev_rows_1200_1231.txt",
+            "size_bytes": 8072,
+            "sha256": (
+                "39ed02810d78fdec8ab535935ac8f2e3819043c7db"
+                "15a7585d2a999990b57d5f"
+            ),
+            "nonempty_line_count": 32,
+        }
+
+        validated = validate_prompt_source(
+            "development",
+            development,
+        )
+        self.assertEqual(validated, development)
+
+        wrong_hash = dict(development)
+        wrong_hash["sha256"] = "0" * 64
+
+        wrong_count = dict(development)
+        wrong_count["nonempty_line_count"] = 31
+
+        with self.assertRaises(ValueError):
+            validate_prompt_source(
+                "development",
+                wrong_hash,
+            )
+
+        with self.assertRaises(ValueError):
+            validate_prompt_source(
+                "pilot",
+                development,
+            )
+
+        with self.assertRaises(ValueError):
+            validate_prompt_source(
+                "development",
+                wrong_count,
+            )
+
+        with self.assertRaises(ValueError):
+            validate_prompt_source(
+                "development",
+                None,
             )
 
 

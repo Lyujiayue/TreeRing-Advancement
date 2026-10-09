@@ -17,21 +17,60 @@ import open_clip
 from optim_utils import *
 from io_utils import *
 from experiment_records import (
+    FROZEN_ATTACK_NAMES,
+    FROZEN_PROMPT_SPLITS,
     SCHEMA_VERSION,
     append_jsonl,
+    build_sample_identity,
     collect_environment,
     describe_prompt_file,
     get_git_state,
     namespace_to_dict,
     utc_now_iso,
+    validate_attack_configuration,
     write_json,
     write_jsonl,
+    validate_prompt_source,
+    validate_run_name,
+    validate_sample_range,
 )
+
+
+IMPLEMENTED_METHOD_NAMES = {
+    "original_tree_ring",
+}
 
 
 def main(args):
     run_started_at = utc_now_iso()
     run_started_perf = time.perf_counter()
+    attack_parameters = validate_attack_configuration(
+        args.attack_name,
+        r_degree=args.r_degree,
+        jpeg_ratio=args.jpeg_ratio,
+        crop_scale=args.crop_scale,
+        crop_ratio=args.crop_ratio,
+        gaussian_blur_r=args.gaussian_blur_r,
+        gaussian_std=args.gaussian_std,
+        brightness_factor=args.brightness_factor,
+        rand_aug=args.rand_aug,
+    )
+    prompt_source = validate_prompt_source(
+        args.prompt_split,
+        describe_prompt_file(args.prompt_file),
+    )
+    sample_range = validate_sample_range(
+        args.prompt_split,
+        args.start,
+        args.end,
+    )
+    validate_run_name(
+        args.run_name,
+        args.method_name,
+        args.prompt_split,
+        args.replicate_id,
+        args.attack_name,
+    )
     repo_dir = Path(__file__).resolve().parent
     output_dir = repo_dir / ".local_outputs" / "runs"
     output_path = output_dir / f"{args.run_name}.json"
@@ -63,7 +102,7 @@ def main(args):
         wandb.init(project='diffusion_watermark', name=args.run_name, tags=['tree_ring_watermark'])
         wandb.config.update(args)
         table = wandb.Table(columns=['gen_no_w', 'no_w_clip_score', 'gen_w', 'w_clip_score', 'prompt', 'no_w_metric', 'w_metric'])
-    
+
     # load diffusion model
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
     torch_dtype = torch.float16 if device == 'cuda' else torch.float32
@@ -73,7 +112,6 @@ def main(args):
         "torch_dtype": str(torch_dtype),
     })
     git_state = get_git_state(repo_dir)
-    prompt_source = describe_prompt_file(args.prompt_file)
 
     scheduler = DDIMScheduler.from_pretrained(
         args.model_id,
@@ -195,10 +233,20 @@ def main(args):
         else:
             w_no_sim = 0
             w_sim = 0
-
+        sample_identity = build_sample_identity(
+            prompt_split=args.prompt_split,
+            sample_index=i,
+            method_name=args.method_name,
+            attack_name=args.attack_name,
+            replicate_id=args.replicate_id,
+            protocol_version=args.protocol_version,
+            watermark_key_id=args.watermark_key_id,
+        )
         sample_record = {
             "sample_id": f"{args.run_name}:{i}",
             "sample_index": i,
+            **sample_identity,
+            "attack_parameters": attack_parameters,
             "prompt": current_prompt,
             "generation_seed": seed,
             "watermark_seed": args.w_seed,
@@ -258,6 +306,16 @@ def main(args):
     summary = {
         "schema_version": SCHEMA_VERSION,
         "run_name": args.run_name,
+        "run_identity": {
+            "prompt_split": args.prompt_split,
+            "method_name": args.method_name,
+            "attack_name": args.attack_name,
+            "attack_parameters": attack_parameters,
+            "replicate_id": args.replicate_id,
+            "protocol_version": args.protocol_version,
+            "watermark_key_id": args.watermark_key_id,
+            "sample_range": sample_range,
+        },
         "num_samples": len(results),
         "started_at_utc": run_started_at,
         "completed_at_utc": run_completed_at,
@@ -286,10 +344,38 @@ def main(args):
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='diffusion watermark')
-    parser.add_argument('--run_name', default='test')
+    parser.add_argument('--run_name', required=True)
     parser.add_argument('--overwrite_output', action='store_true')
     parser.add_argument('--dataset', default='Gustavosta/Stable-Diffusion-Prompts')
-    parser.add_argument('--prompt_file', default=None)
+    parser.add_argument('--prompt_file', required=True)
+    parser.add_argument(
+        '--prompt_split',
+        required=True,
+        choices=sorted(FROZEN_PROMPT_SPLITS),
+    )
+    parser.add_argument(
+        '--method_name',
+        required=True,
+        choices=sorted(IMPLEMENTED_METHOD_NAMES),
+    )
+    parser.add_argument(
+        '--attack_name',
+        required=True,
+        choices=sorted(FROZEN_ATTACK_NAMES),
+    )
+    parser.add_argument(
+        '--replicate_id',
+        required=True,
+        type=int,
+    )
+    parser.add_argument(
+        '--protocol_version',
+        required=True,
+    )
+    parser.add_argument(
+        '--watermark_key_id',
+        required=True,
+    )
     parser.add_argument('--start', default=0, type=int)
     parser.add_argument('--end', default=10, type=int)
     parser.add_argument('--image_length', default=512, type=int)
@@ -313,7 +399,7 @@ if __name__ == '__main__':
     parser.add_argument('--w_measurement', default='l1_complex')
     parser.add_argument('--w_injection', default='complex')
     parser.add_argument('--w_pattern_const', default=0, type=float)
-    
+
     # for image distortion
     parser.add_argument('--r_degree', default=None, type=float)
     parser.add_argument('--jpeg_ratio', default=None, type=int)
@@ -328,5 +414,5 @@ if __name__ == '__main__':
 
     if args.test_num_inference_steps is None:
         args.test_num_inference_steps = args.num_inference_steps
-    
+
     main(args)
