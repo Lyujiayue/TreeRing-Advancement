@@ -2,10 +2,12 @@
 
 import hashlib
 import json
+import math
 import platform
 import subprocess
 import sys
 from datetime import datetime, timezone
+from numbers import Real
 from pathlib import Path
 
 
@@ -43,6 +45,10 @@ METHOD_RUN_TOKENS = {
     "saliency_aware_tree_ring": "saliency",
 }
 FROZEN_METHOD_NAMES = frozenset(METHOD_RUN_TOKENS)
+IMPLEMENTED_METHOD_NAMES = frozenset({
+    "original_tree_ring",
+    "globally_weaker_tree_ring",
+})
 FROZEN_ATTACK_PARAMETERS = {
     "clean": {},
     "rotation": {
@@ -66,6 +72,27 @@ FROZEN_ATTACK_PARAMETERS = {
     },
 }
 FROZEN_ATTACK_NAMES = frozenset(FROZEN_ATTACK_PARAMETERS)
+
+
+def validate_method_configuration(method_name, global_alpha=None):
+    """Return explicit parameters only for methods implemented by the runner."""
+    if method_name not in IMPLEMENTED_METHOD_NAMES:
+        raise ValueError(f"Method is not implemented: {method_name!r}")
+
+    if method_name == "original_tree_ring":
+        if global_alpha is not None:
+            raise ValueError("global_alpha is only valid for globally_weaker_tree_ring")
+        return {}
+
+    if (
+        isinstance(global_alpha, bool)
+        or not isinstance(global_alpha, Real)
+        or not 0 <= global_alpha <= 1
+        or not math.isfinite(global_alpha)
+    ):
+        raise ValueError("global_alpha must be an explicit finite number in [0, 1]")
+
+    return {"alpha": float(global_alpha)}
 
 
 def source_row_id_for_sample(prompt_split, sample_index):

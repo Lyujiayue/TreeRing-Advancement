@@ -3,7 +3,6 @@ try:
     import wandb
 except ImportError:
     wandb = None
-import copy
 import time
 from tqdm import tqdm
 from statistics import mean, stdev
@@ -19,6 +18,7 @@ from io_utils import *
 from experiment_records import (
     FROZEN_ATTACK_NAMES,
     FROZEN_PROMPT_SPLITS,
+    IMPLEMENTED_METHOD_NAMES,
     SCHEMA_VERSION,
     append_jsonl,
     build_sample_identity,
@@ -28,6 +28,7 @@ from experiment_records import (
     namespace_to_dict,
     utc_now_iso,
     validate_attack_configuration,
+    validate_method_configuration,
     write_json,
     write_jsonl,
     validate_prompt_source,
@@ -36,14 +37,12 @@ from experiment_records import (
 )
 
 
-IMPLEMENTED_METHOD_NAMES = {
-    "original_tree_ring",
-}
-
-
 def main(args):
     run_started_at = utc_now_iso()
     run_started_perf = time.perf_counter()
+    method_parameters = validate_method_configuration(
+        args.method_name, getattr(args, 'global_alpha', None)
+    )
     attack_parameters = validate_attack_configuration(
         args.attack_name,
         r_degree=args.r_degree,
@@ -161,7 +160,8 @@ def main(args):
         ### generation
         # generation without watermarking
         set_random_seed(seed)
-        init_latents_no_w = pipe.get_random_latents()
+        base_latents = pipe.get_random_latents()
+        init_latents_no_w = base_latents.clone()
         outputs_no_w = pipe(
             current_prompt,
             num_images_per_prompt=args.num_images,
@@ -174,17 +174,14 @@ def main(args):
         orig_image_no_w = outputs_no_w.images[0]
         
         # generation with watermarking
-        if init_latents_no_w is None:
-            set_random_seed(seed)
-            init_latents_w = pipe.get_random_latents()
-        else:
-            init_latents_w = copy.deepcopy(init_latents_no_w)
+        init_latents_w = base_latents.clone()
 
         # get watermarking mask
         watermarking_mask = get_watermarking_mask(init_latents_w, args, device)
 
         # inject watermark
-        init_latents_w = inject_watermark(init_latents_w, watermarking_mask, gt_patch, args)
+        init_latents_w = inject_watermark_for_method(init_latents_w, watermarking_mask, gt_patch, args)
+        latent_residual = measure_latent_residual(base_latents, init_latents_w)
 
         outputs_w = pipe(
             current_prompt,
@@ -247,6 +244,8 @@ def main(args):
             "sample_index": i,
             **sample_identity,
             "attack_parameters": attack_parameters,
+            "method_parameters": method_parameters,
+            **latent_residual,
             "prompt": current_prompt,
             "generation_seed": seed,
             "watermark_seed": args.w_seed,
@@ -309,6 +308,7 @@ def main(args):
         "run_identity": {
             "prompt_split": args.prompt_split,
             "method_name": args.method_name,
+            "method_parameters": method_parameters,
             "attack_name": args.attack_name,
             "attack_parameters": attack_parameters,
             "replicate_id": args.replicate_id,
@@ -342,7 +342,7 @@ def main(args):
     print(f"sample records saved to: {samples_path}")
 
 
-if __name__ == '__main__':
+def build_parser():
     parser = argparse.ArgumentParser(description='diffusion watermark')
     parser.add_argument('--run_name', required=True)
     parser.add_argument('--overwrite_output', action='store_true')
@@ -357,6 +357,13 @@ if __name__ == '__main__':
         '--method_name',
         required=True,
         choices=sorted(IMPLEMENTED_METHOD_NAMES),
+    )
+    parser.add_argument(
+        '--global_alpha',
+        type=float,
+        default=None,
+        help='Explicit residual strength in [0, 1], required only for Global; '
+             'no default or pilot-selected value is supplied.',
     )
     parser.add_argument(
         '--attack_name',
@@ -410,7 +417,11 @@ if __name__ == '__main__':
     parser.add_argument('--brightness_factor', default=None, type=float)
     parser.add_argument('--rand_aug', default=0, type=int)
 
-    args = parser.parse_args()
+    return parser
+
+
+if __name__ == '__main__':
+    args = build_parser().parse_args()
 
     if args.test_num_inference_steps is None:
         args.test_num_inference_steps = args.num_inference_steps

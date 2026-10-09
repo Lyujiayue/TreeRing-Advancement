@@ -14,6 +14,7 @@ from experiment_records import (
     namespace_to_dict,
     source_row_id_for_sample,
     validate_attack_configuration,
+    validate_method_configuration,
     validate_prompt_source,
     validate_run_name,
     validate_sample_range,
@@ -23,6 +24,43 @@ from experiment_records import (
 
 
 class ExperimentRecordTests(unittest.TestCase):
+    def test_method_parameters_require_explicit_global_alpha(self):
+        self.assertEqual(validate_method_configuration("original_tree_ring"), {})
+        for alpha in (0, 0.25, 1):
+            with self.subTest(alpha=alpha):
+                self.assertEqual(
+                    validate_method_configuration("globally_weaker_tree_ring", alpha),
+                    {"alpha": float(alpha)},
+                )
+
+    def test_method_parameters_reject_invalid_alpha_and_unimplemented_methods(self):
+        for alpha in (None, True, False, "0.5", 1j, -0.1, 1.1,
+                      float("nan"), float("inf"), -float("inf"), 10 ** 400):
+            with self.subTest(alpha=alpha):
+                with self.assertRaises(ValueError):
+                    validate_method_configuration("globally_weaker_tree_ring", alpha)
+        with self.assertRaises(ValueError):
+            validate_method_configuration("original_tree_ring", 0.5)
+        for method in ("saliency_aware_tree_ring", "no_watermark", "unknown"):
+            with self.subTest(method=method):
+                with self.assertRaises(ValueError):
+                    validate_method_configuration(method)
+
+    def test_global_sample_identity_and_run_name(self):
+        identity = build_sample_identity(
+            prompt_split="development", sample_index=7,
+            method_name="globally_weaker_tree_ring", attack_name="clean",
+            replicate_id=1, protocol_version="v1",
+            watermark_key_id="treering-rand-wseed-999999",
+        )
+        self.assertEqual(identity["source_row_id"], 1207)
+        self.assertEqual(identity["method_name"], "globally_weaker_tree_ring")
+        self.assertEqual(
+            validate_run_name("global_development_r1_clean",
+                              "globally_weaker_tree_ring", "development", 1, "clean"),
+            "global_development_r1_clean",
+        )
+
     def test_schema_version_is_v2(self):
         self.assertEqual(
             SCHEMA_VERSION,

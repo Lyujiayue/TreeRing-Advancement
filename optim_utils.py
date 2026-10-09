@@ -9,6 +9,7 @@ import copy
 from typing import Any, Mapping
 import json
 import scipy.stats
+from experiment_records import validate_method_configuration
 
 def read_json(filename: str) -> Mapping[str, Any]:
     """Returns a Python dict representation of JSON object at input file."""
@@ -269,6 +270,62 @@ def inject_watermark(latents, mask, gt_patch, args, saliency_map=None):
         latents_final[mask] = gt_patch[mask].to(latents.dtype).clone()
 
     return latents_final.to(latents.dtype)
+
+def inject_watermark_for_method(latents, mask, gt_patch, args):
+    """Apply Original or uniformly scale its residual without changing inputs."""
+    parameters = validate_method_configuration(
+        args.method_name, getattr(args, 'global_alpha', None)
+    )
+    original = inject_watermark(latents, mask, gt_patch, args)
+    if args.method_name == 'original_tree_ring':
+        return original
+
+    alpha = parameters['alpha']
+    # Exact endpoints avoid cancellation/rounding in z + (z_original - z).
+    if alpha == 0:
+        return latents.clone()
+    if alpha == 1:
+        return original
+
+    # Half-precision inputs use float32 arithmetic, then return to the input
+    # dtype. The recorded budget is measured after this final conversion.
+    working_dtype = (
+        torch.float32
+        if latents.dtype in (torch.float16, torch.bfloat16)
+        else latents.dtype
+    )
+    base = latents.to(working_dtype)
+    original = original.to(working_dtype)
+    return (base + alpha * (original - base)).to(latents.dtype)
+
+
+def measure_latent_residual(base_latents, injected_latents):
+    """Measure realized RMS/L2 over all elements of one sample's latent."""
+    if base_latents.shape != injected_latents.shape:
+        raise ValueError('Base and injected latents must have the same shape')
+    if base_latents.numel() == 0:
+        raise ValueError('Latents must not be empty')
+    if base_latents.device != injected_latents.device:
+        raise ValueError('Base and injected latents must be on the same device')
+    if not base_latents.is_floating_point() or not injected_latents.is_floating_point():
+        raise ValueError('Latents must be real floating-point tensors')
+
+    # Promote before subtraction, so the budget describes the actual tensor
+    # values rather than a half-precision approximation to their difference.
+    residual = (
+        injected_latents.detach().to(torch.float64)
+        - base_latents.detach().to(torch.float64)
+    )
+    if not torch.isfinite(residual).all():
+        raise ValueError('Latent residual must contain only finite values')
+    squared_l2 = residual.square().sum()
+    if not torch.isfinite(squared_l2):
+        raise ValueError('Latent residual budget must be finite')
+    return {
+        'latent_residual_rms': (squared_l2 / residual.numel()).sqrt().item(),
+        'latent_residual_l2': squared_l2.sqrt().item(),
+    }
+
 
 def eval_watermark(reversed_latents_no_w, reversed_latents_w, watermarking_mask, gt_patch, args):
     if 'complex' in args.w_measurement:
