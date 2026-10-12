@@ -95,14 +95,17 @@ from these tests. No real image-generation experiment is part of local tests.
 
 Alpha grid, pre-specified selection rule, final alpha, and achieved budget
 remain Pilot/amendment decisions. Test alpha values are implementation probes,
-not a proposed grid. Existing canonical names identify method/split/replicate/
-attack and do not distinguish alpha candidates or smoke/full runs. The default
-collision guard prevents overwriting preserved evidence. A reviewed naming
-extension is needed before candidate sweeps or reuse of an occupied identity;
-do not bypass this with `--overwrite_output`.
+not a proposed grid. The local naming extension now requires explicit smoke/full
+purpose and distinguishes alpha, sample ranges, and generation/inversion steps.
+See [the naming and GPU preparation plan](run_identity_and_global_gpu_plan.md).
+New runner invocations reject `--overwrite_output`; historical artifacts and
+legacy name-reading helpers are preserved.
 
 In particular, the preserved Stage C server run
 `original_development_r1_clean` contains one sample and one step. It is not the
-32-sample Development result and must not be overwritten. Local Global tests
-do not complete the Development gate. The next authorized step is review of
-the uncommitted local diff; a commit/push requires explicit user confirmation.
+32-sample Development result and must not be overwritten. The Global algorithm
+at `6c44c0a` was saved to GitHub, synchronized to the server and passed its CPU
+gate. The naming/GPU preparation extension is currently an uncommitted local
+change. Local tests do not complete the GPU or Development gate. A new commit,
+push, server synchronization and GPU execution require the relevant explicit
+user authorization.

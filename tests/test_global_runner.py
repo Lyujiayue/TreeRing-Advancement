@@ -61,6 +61,7 @@ class GlobalRunnerTests(unittest.TestCase):
         token = 'original' if method == 'original_tree_ring' else 'global'
         arguments = [
             '--run_name', f'{token}_development_r1_clean',
+            '--run_purpose', 'smoke',
             '--prompt_file', 'synthetic-prompts.txt',
             '--prompt_split', 'development', '--method_name', method,
             '--attack_name', 'clean', '--replicate_id', '1',
@@ -71,7 +72,15 @@ class GlobalRunnerTests(unittest.TestCase):
         ]
         if alpha is not None:
             arguments.extend(['--global_alpha', str(alpha)])
-        return runner.build_parser().parse_args(arguments)
+        args = runner.build_parser().parse_args(arguments)
+        # Invalid configurations must still reach the method guard unchanged.
+        try:
+            from run_naming import alpha_token
+            suffix = '_a' + alpha_token(alpha) if method == 'globally_weaker_tree_ring' else ''
+            args.run_name += suffix + '_smoke_s7_e8_g1_i1'
+        except ValueError:
+            pass
+        return args
 
     def prompt_description(self):
         return {
@@ -124,6 +133,8 @@ class GlobalRunnerTests(unittest.TestCase):
         self.assertEqual(samples[0]['watermark_seed'], args.w_seed)
         self.assertEqual(samples[0]['method_name'], args.method_name)
         self.assertEqual(samples[0]['attack_parameters'], {})
+        self.assertEqual(samples[0]['run_purpose'], 'smoke')
+        self.assertEqual(summary['run_identity']['run_purpose'], 'smoke')
         self.assertEqual(samples[0]['no_w_score'], -samples[0]['no_w_metric'])
         self.assertEqual(samples[0]['w_score'], -samples[0]['w_metric'])
         for value in samples[0].values():
@@ -154,6 +165,7 @@ class GlobalRunnerTests(unittest.TestCase):
                 global_pipe, summary, sample = self.run_synthetic_sample(args)
                 self.assertTrue(torch.equal(global_pipe.random_latents[0], key))
                 self.assertTrue(torch.equal(global_pipe.calls[0]['latent'], base))
+                self.assertEqual(sample['paired_inputs'], original_sample['paired_inputs'])
                 for baseline_call, global_call in zip(original.calls, global_pipe.calls):
                     self.assertEqual(baseline_call['prompt'], global_call['prompt'])
                     self.assertEqual(baseline_call['parameters'], global_call['parameters'])
@@ -224,6 +236,10 @@ class GlobalRunnerTests(unittest.TestCase):
             ('hash', {}, {'sha256': '0' * 64}),
             ('range', {'end': 33}, None),
             ('name', {'run_name': 'wrong_name'}, None),
+            ('purpose', {'run_purpose': None}, None),
+            ('partial_full', {'run_purpose': 'full'}, None),
+            ('alpha_name', {'global_alpha': 0.5}, None),
+            ('overwrite', {'overwrite_output': True}, None),
         )
         for name, overrides, prompt_overrides in cases:
             args = self.make_args('globally_weaker_tree_ring', 0.25)

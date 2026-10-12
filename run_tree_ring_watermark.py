@@ -1,4 +1,5 @@
 import argparse
+import hashlib
 try:
     import wandb
 except ImportError:
@@ -32,9 +33,18 @@ from experiment_records import (
     write_json,
     write_jsonl,
     validate_prompt_source,
-    validate_run_name,
-    validate_sample_range,
 )
+from run_naming import build_run_identity
+
+
+def tensor_fingerprint(tensor):
+    """Hash exact realized bytes, dtype and shape for cross-run pairing audits."""
+    value = tensor.detach().contiguous().cpu()
+    digest = hashlib.sha256()
+    digest.update(str(value.dtype).encode('ascii'))
+    digest.update(str(tuple(value.shape)).encode('ascii'))
+    digest.update(value.view(torch.uint8).numpy().tobytes())
+    return digest.hexdigest()
 
 
 def main(args):
@@ -58,18 +68,10 @@ def main(args):
         args.prompt_split,
         describe_prompt_file(args.prompt_file),
     )
-    sample_range = validate_sample_range(
-        args.prompt_split,
-        args.start,
-        args.end,
-    )
-    validate_run_name(
-        args.run_name,
-        args.method_name,
-        args.prompt_split,
-        args.replicate_id,
-        args.attack_name,
-    )
+    naming_identity = build_run_identity(args)
+    sample_range = naming_identity['sample_range']
+    if args.overwrite_output:
+        raise ValueError('New run identities preserve evidence; overwrite_output is forbidden')
     repo_dir = Path(__file__).resolve().parent
     output_dir = repo_dir / ".local_outputs" / "runs"
     output_path = output_dir / f"{args.run_name}.json"
@@ -78,18 +80,14 @@ def main(args):
     existing_outputs = [
         path for path in (output_path, samples_path) if path.exists()
     ]
-    if existing_outputs and not args.overwrite_output:
+    if existing_outputs:
         existing_names = ", ".join(
             str(path) for path in existing_outputs
         )
         raise FileExistsError(
-            "Output already exists. Choose a new --run_name or use "
-            f"--overwrite_output explicitly: {existing_names}"
+            "Output already exists. Preserve it and review a new run identity: "
+            f"{existing_names}"
         )
-
-    if args.overwrite_output:
-        for path in existing_outputs:
-            path.unlink()
 
     table = None
     if args.with_tracking:
@@ -178,6 +176,11 @@ def main(args):
 
         # get watermarking mask
         watermarking_mask = get_watermarking_mask(init_latents_w, args, device)
+        paired_inputs = {
+            'base_latent_sha256': tensor_fingerprint(base_latents),
+            'watermark_key_sha256': tensor_fingerprint(gt_patch),
+            'watermark_mask_sha256': tensor_fingerprint(watermarking_mask),
+        }
 
         # inject watermark
         init_latents_w = inject_watermark_for_method(init_latents_w, watermarking_mask, gt_patch, args)
@@ -242,6 +245,9 @@ def main(args):
         sample_record = {
             "sample_id": f"{args.run_name}:{i}",
             "sample_index": i,
+            "run_purpose": naming_identity['run_purpose'],
+            "run_naming_version": naming_identity['run_naming_version'],
+            "paired_inputs": paired_inputs,
             **sample_identity,
             "attack_parameters": attack_parameters,
             "method_parameters": method_parameters,
@@ -306,6 +312,7 @@ def main(args):
         "schema_version": SCHEMA_VERSION,
         "run_name": args.run_name,
         "run_identity": {
+            **naming_identity,
             "prompt_split": args.prompt_split,
             "method_name": args.method_name,
             "method_parameters": method_parameters,
@@ -345,6 +352,7 @@ def main(args):
 def build_parser():
     parser = argparse.ArgumentParser(description='diffusion watermark')
     parser.add_argument('--run_name', required=True)
+    parser.add_argument('--run_purpose', required=True, choices=['smoke', 'full'])
     parser.add_argument('--overwrite_output', action='store_true')
     parser.add_argument('--dataset', default='Gustavosta/Stable-Diffusion-Prompts')
     parser.add_argument('--prompt_file', required=True)
