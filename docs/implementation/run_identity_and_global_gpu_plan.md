@@ -61,7 +61,11 @@ schema 仍为 `treering-experiment-v2`。新增字段：
 
 alpha=0.5 仅是中间实现探针，不能称为推荐 alpha 或 Pilot 候选 grid。
 ComplexHalf 的实验支持 warning 是此路径预期可能出现的警告，必须原样记录；
-另外只接受已知 timm deprecation warning。其他 warning 或 traceback 会阻断验收。
+另外只接受已知 timm deprecation warning。2026-10-12 的四组 GPU smoke 日志还一致出现
+`modified_stable_diffusion.py` 调用当前 diffusers 的 `decode_latents` 时发出的弃用警告。
+经保留原始日志并审查，只将这条完整的 `FutureWarning: The decode_latents method is deprecated
+and will be removed in 1.0.0. Please use VaeImageProcessor.postprocess(...) instead` 文本列入
+console 允许范围；其他 warning 或 traceback 继续阻断验收。数值、配对、端点及哈希判定不变。
 
 ### 小规模端到端 smoke
 

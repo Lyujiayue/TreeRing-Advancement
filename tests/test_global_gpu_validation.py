@@ -121,7 +121,7 @@ class GlobalGPUAcceptanceTests(unittest.TestCase):
             run.assert_not_called()
 
     def test_process_evidence_requires_matching_hashes_and_explained_console(self):
-        for anomaly in (None, 'warning', 'traceback', 'tamper'):
+        for anomaly in (None, 'warning', 'changed-deprecation', 'traceback', 'tamper'):
             with self.subTest(anomaly=anomaly), tempfile.TemporaryDirectory() as directory:
                 root = Path(directory)
                 baseline, sanity = root / 'baseline.json', root / 'sanity.json'
@@ -131,9 +131,14 @@ class GlobalGPUAcceptanceTests(unittest.TestCase):
                 with patch.object(gate, 'TRANSFER', root):
                     for label in gate.RUNS:
                         log = root / (label + '.log')
-                        content = 'FutureWarning: Importing from timm.models.layers is deprecated\n'
+                        content = ('FutureWarning: Importing from timm.models.layers is deprecated\n'
+                                   '/venv/diffusers/pipeline_stable_diffusion.py:594: FutureWarning: '
+                                   'The decode_latents method is deprecated and will be removed '
+                                   'in 1.0.0. Please use VaeImageProcessor.postprocess(...) instead\n')
                         if label == 'original' and anomaly == 'warning':
                             content += 'UserWarning: unexplained computation warning\n'
+                        if label == 'original' and anomaly == 'changed-deprecation':
+                            content += 'FutureWarning: The decode_latents method is deprecated but changed\n'
                         if label == 'original' and anomaly == 'traceback':
                             content += 'Traceback (most recent call last)\n'
                         log.write_text(content, encoding='utf-8')

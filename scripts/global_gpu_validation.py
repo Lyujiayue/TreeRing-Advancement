@@ -371,7 +371,9 @@ def review_process_reports(report_paths, head, baseline_path, sanity_path):
         log = log_path.read_text(encoding='utf-8', errors='replace')
         require('Traceback (most recent call last)' not in log, 'Traceback in smoke console')
         allowed = ('Importing from timm.models.layers is deprecated',
-                   'ComplexHalf support is experimental')
+                   'ComplexHalf support is experimental',
+                   'FutureWarning: The decode_latents method is deprecated and will be removed '
+                   'in 1.0.0. Please use VaeImageProcessor.postprocess(...) instead')
         warnings_found = [line.strip() for line in log.splitlines()
                           if re.search(r'\b\w*Warning:', line)]
         require(all(any(message in line for message in allowed) for line in warnings_found),
