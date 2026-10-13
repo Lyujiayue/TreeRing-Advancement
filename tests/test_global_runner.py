@@ -112,6 +112,17 @@ class GlobalRunnerTests(unittest.TestCase):
                                                  side_effect=lambda a, b, seed, config: (a, b)))
                 stack.enter_context(patch.object(runner, 'transform_img', side_effect=lambda image: image))
                 stack.enter_context(patch.object(runner, 'tqdm', side_effect=lambda values: values))
+                if args.save_paired_images:
+                    # Exercise the real PNG writer without changing the synthetic
+                    # pipeline's tensor images or its detection calculations.
+                    from PIL import Image
+                    from image_artifacts import save_image_pair
+                    def save_synthetic_pair(directory, index, no_w, marked):
+                        def rgb(value):
+                            pixels = ((value[:3].permute(1, 2, 0).clamp(-3, 3) + 3) * 42).to(torch.uint8)
+                            return Image.fromarray(pixels.numpy(), 'RGB')
+                        return save_image_pair(directory, index, rgb(no_w), rgb(marked))
+                    stack.enter_context(patch.object(runner, 'save_image_pair', side_effect=save_synthetic_pair))
                 stack.enter_context(contextlib.redirect_stdout(io.StringIO()))
                 runner.main(args)
                 scheduler.assert_called_once()
@@ -123,6 +134,10 @@ class GlobalRunnerTests(unittest.TestCase):
             summary = json.loads((outputs / f'{args.run_name}.json').read_text(encoding='utf-8'))
             samples = [json.loads(line) for line in
                        (outputs / f'{args.run_name}.samples.jsonl').read_text(encoding='utf-8').splitlines()]
+            if args.save_paired_images:
+                from image_artifacts import verify_image_pair
+                verify_image_pair(outputs / (args.run_name + '.images'), 7,
+                                  samples[0]['image_artifacts'], expected_size=16)
         self.assertEqual(summary['results'], samples)
         self.assertEqual(summary['schema_version'], SCHEMA_VERSION)
         self.assertEqual(summary['num_samples'], 1)
@@ -146,6 +161,32 @@ class GlobalRunnerTests(unittest.TestCase):
         for field, value in budget.items():
             self.assertEqual(samples[0][field], value)
         return pipe, summary, samples[0]
+
+    def test_saving_images_preserves_generation_rng_detection_and_budgets(self):
+        args = self.make_args('globally_weaker_tree_ring', .25)
+        baseline, _, baseline_row = self.run_synthetic_sample(args)
+        args.save_paired_images = True
+        saved, _, saved_row = self.run_synthetic_sample(args)
+        for a, b in zip(baseline.calls, saved.calls):
+            self.assertTrue(torch.equal(a['latent'], b['latent']))
+            self.assertTrue(torch.equal(a['rng_state'], b['rng_state']))
+        for field in ('paired_inputs', 'w_metric', 'no_w_metric', 'latent_residual_l2', 'latent_residual_rms'):
+            self.assertEqual(baseline_row[field], saved_row[field])
+        self.assertFalse(saved_row['clip_similarity_available'])
+
+    def test_require_cuda_rejects_fallback_before_model_or_output_creation(self):
+        args = self.make_args()
+        args.require_cuda = args.save_paired_images = True
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            with patch.object(runner, '__file__', str(root / 'runner.py')), \
+                 patch.object(runner, 'describe_prompt_file', return_value=self.prompt_description()), \
+                 patch.object(runner.torch.cuda, 'is_available', return_value=False), \
+                 patch.object(runner.InversableStableDiffusionPipeline, 'from_pretrained') as model:
+                with self.assertRaises(RuntimeError):
+                    runner.main(args)
+                model.assert_not_called()
+            self.assertFalse((root / '.local_outputs').exists())
 
     def test_runner_original_and_global_share_inputs_and_record_realized_budgets(self):
         original_args = self.make_args()

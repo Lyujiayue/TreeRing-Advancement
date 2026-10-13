@@ -35,6 +35,7 @@ from experiment_records import (
     validate_prompt_source,
 )
 from run_naming import build_run_identity
+from image_artifacts import save_image_pair
 
 
 def tensor_fingerprint(tensor):
@@ -76,9 +77,11 @@ def main(args):
     output_dir = repo_dir / ".local_outputs" / "runs"
     output_path = output_dir / f"{args.run_name}.json"
     samples_path = output_dir / f"{args.run_name}.samples.jsonl"
+    images_dir = output_dir / f"{args.run_name}.images"
+    save_images = getattr(args, 'save_paired_images', False)
 
     existing_outputs = [
-        path for path in (output_path, samples_path) if path.exists()
+        path for path in (output_path, samples_path, images_dir) if path.exists()
     ]
     if existing_outputs:
         existing_names = ", ".join(
@@ -102,6 +105,11 @@ def main(args):
 
     # load diffusion model
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
+    if getattr(args, 'require_cuda', False) and device != 'cuda':
+        raise RuntimeError('CUDA is required; CPU fallback is forbidden')
+    if save_images:
+        images_dir.parent.mkdir(parents=True, exist_ok=True)
+        images_dir.mkdir()  # Exclusive run reservation; retain on any later failure.
     torch_dtype = torch.float16 if device == 'cuda' else torch.float32
     environment = collect_environment(torch)
     environment.update({
@@ -197,6 +205,9 @@ def main(args):
             )
         orig_image_w = outputs_w.images[0]
 
+        image_artifacts = (save_image_pair(images_dir, i, orig_image_no_w, orig_image_w)
+                           if save_images else None)
+
         ### test watermark
         # distortion
         orig_image_no_w_auged, orig_image_w_auged = image_distortion(orig_image_no_w, orig_image_w, seed, args)
@@ -263,6 +274,9 @@ def main(args):
             "w_sim": w_sim,
             "sample_duration_seconds": time.perf_counter() - sample_started_perf,
         }
+        if save_images:
+            sample_record['image_artifacts'] = image_artifacts
+        sample_record['clip_similarity_available'] = args.reference_model is not None
         results.append(sample_record)
         append_jsonl(samples_path, sample_record)
 
@@ -354,6 +368,10 @@ def build_parser():
     parser.add_argument('--run_name', required=True)
     parser.add_argument('--run_purpose', required=True, choices=['smoke', 'full'])
     parser.add_argument('--overwrite_output', action='store_true')
+    parser.add_argument('--save_paired_images', action='store_true',
+                        help='Preserve untouched paired RGB PNGs and their hashes locally.')
+    parser.add_argument('--require_cuda', action='store_true',
+                        help='Reject CPU fallback before loading the model.')
     parser.add_argument('--dataset', default='Gustavosta/Stable-Diffusion-Prompts')
     parser.add_argument('--prompt_file', required=True)
     parser.add_argument(
