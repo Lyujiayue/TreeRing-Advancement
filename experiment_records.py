@@ -48,6 +48,7 @@ FROZEN_METHOD_NAMES = frozenset(METHOD_RUN_TOKENS)
 IMPLEMENTED_METHOD_NAMES = frozenset({
     "original_tree_ring",
     "globally_weaker_tree_ring",
+    "saliency_aware_tree_ring",
 })
 FROZEN_ATTACK_PARAMETERS = {
     "clean": {},
@@ -74,25 +75,85 @@ FROZEN_ATTACK_PARAMETERS = {
 FROZEN_ATTACK_NAMES = frozenset(FROZEN_ATTACK_PARAMETERS)
 
 
-def validate_method_configuration(method_name, global_alpha=None):
+def validate_method_configuration(
+    method_name,
+    global_alpha=None,
+    *,
+    saliency_preview_steps=None,
+    saliency_background_strength=None,
+    saliency_foreground_strength=None,
+    saliency_power=None,
+):
     """Return explicit parameters only for methods implemented by the runner."""
     if method_name not in IMPLEMENTED_METHOD_NAMES:
         raise ValueError(f"Method is not implemented: {method_name!r}")
 
+    saliency_values = (
+        saliency_preview_steps,
+        saliency_background_strength,
+        saliency_foreground_strength,
+        saliency_power,
+    )
+
     if method_name == "original_tree_ring":
         if global_alpha is not None:
             raise ValueError("global_alpha is only valid for globally_weaker_tree_ring")
+        if any(value is not None for value in saliency_values):
+            raise ValueError("saliency parameters are only valid for saliency_aware_tree_ring")
         return {}
 
-    if (
-        isinstance(global_alpha, bool)
-        or not isinstance(global_alpha, Real)
-        or not 0 <= global_alpha <= 1
-        or not math.isfinite(global_alpha)
-    ):
-        raise ValueError("global_alpha must be an explicit finite number in [0, 1]")
+    if method_name == "globally_weaker_tree_ring":
+        if any(value is not None for value in saliency_values):
+            raise ValueError("saliency parameters are only valid for saliency_aware_tree_ring")
+        if (
+            isinstance(global_alpha, bool)
+            or not isinstance(global_alpha, Real)
+            or not 0 <= global_alpha <= 1
+            or not math.isfinite(global_alpha)
+        ):
+            raise ValueError("global_alpha must be an explicit finite number in [0, 1]")
+        return {"alpha": float(global_alpha)}
 
-    return {"alpha": float(global_alpha)}
+    if global_alpha is not None:
+        raise ValueError("global_alpha is only valid for globally_weaker_tree_ring")
+    if (
+        isinstance(saliency_preview_steps, bool)
+        or not isinstance(saliency_preview_steps, int)
+        or saliency_preview_steps < 1
+    ):
+        raise ValueError("saliency_preview_steps must be an explicit positive integer")
+    for name, value, allow_zero in (
+        ("saliency_background_strength", saliency_background_strength, True),
+        ("saliency_foreground_strength", saliency_foreground_strength, True),
+        ("saliency_power", saliency_power, False),
+    ):
+        try:
+            finite = math.isfinite(value)
+        except (OverflowError, TypeError):
+            finite = False
+        if (
+            isinstance(value, bool)
+            or not isinstance(value, Real)
+            or not finite
+            or value < 0
+            or (not allow_zero and value == 0)
+        ):
+            qualifier = "non-negative" if allow_zero else "positive"
+            raise ValueError(f"{name} must be an explicit finite {qualifier} number")
+    background_strength = float(saliency_background_strength)
+    foreground_strength = float(saliency_foreground_strength)
+    # Signed zero has identical method semantics. Canonicalize it so one
+    # Saliency configuration cannot acquire multiple record/run identities.
+    if background_strength == 0:
+        background_strength = 0.0
+    if foreground_strength == 0:
+        foreground_strength = 0.0
+    return {
+        "preview_steps": saliency_preview_steps,
+        "background_strength": background_strength,
+        "foreground_strength": foreground_strength,
+        "power": float(saliency_power),
+    }
 
 
 def source_row_id_for_sample(prompt_split, sample_index):

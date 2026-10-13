@@ -10,6 +10,7 @@ from pathlib import Path
 from unittest.mock import Mock, patch
 
 import torch
+import numpy as np
 
 import run_tree_ring_watermark as runner
 from experiment_records import FROZEN_PROMPT_SPLITS, SCHEMA_VERSION
@@ -58,7 +59,11 @@ class SyntheticPipeline:
 
 class GlobalRunnerTests(unittest.TestCase):
     def make_args(self, method='original_tree_ring', alpha=None):
-        token = 'original' if method == 'original_tree_ring' else 'global'
+        token = {
+            'original_tree_ring': 'original',
+            'globally_weaker_tree_ring': 'global',
+            'saliency_aware_tree_ring': 'saliency',
+        }.get(method, 'unknown')
         arguments = [
             '--run_name', f'{token}_development_r1_clean',
             '--run_purpose', 'smoke',
@@ -72,11 +77,23 @@ class GlobalRunnerTests(unittest.TestCase):
         ]
         if alpha is not None:
             arguments.extend(['--global_alpha', str(alpha)])
+        if method == 'saliency_aware_tree_ring':
+            arguments.extend([
+                '--saliency_preview_steps', '10',
+                '--saliency_background_strength', '1.5',
+                '--saliency_foreground_strength', '0.2',
+                '--saliency_power', '2.0',
+            ])
         args = runner.build_parser().parse_args(arguments)
         # Invalid configurations must still reach the method guard unchanged.
         try:
             from run_naming import alpha_token
-            suffix = '_a' + alpha_token(alpha) if method == 'globally_weaker_tree_ring' else ''
+            if method == 'globally_weaker_tree_ring':
+                suffix = '_a' + alpha_token(alpha)
+            elif method == 'saliency_aware_tree_ring':
+                suffix = '_pv10_bg1p5_fg0p2_pw2p0'
+            else:
+                suffix = ''
             args.run_name += suffix + '_smoke_s7_e8_g1_i1'
         except ValueError:
             pass
@@ -112,6 +129,10 @@ class GlobalRunnerTests(unittest.TestCase):
                                                  side_effect=lambda a, b, seed, config: (a, b)))
                 stack.enter_context(patch.object(runner, 'transform_img', side_effect=lambda image: image))
                 stack.enter_context(patch.object(runner, 'tqdm', side_effect=lambda values: values))
+                stack.enter_context(patch.object(
+                    runner, 'get_saliency_weight_from_tensor',
+                    return_value=np.full((1, 1, 16, 16), 0.75, dtype=np.float32),
+                ))
                 if args.save_paired_images:
                     # Exercise the real PNG writer without changing the synthetic
                     # pipeline's tensor images or its detection calculations.
@@ -157,7 +178,7 @@ class GlobalRunnerTests(unittest.TestCase):
                 self.assertTrue(math.isfinite(value))
         # The pipeline modifies its own input, while the sampled base survives.
         self.assertTrue(torch.equal(pipe.random_latents[-1], pipe.calls[0]['latent']))
-        budget = measure_latent_residual(pipe.calls[0]['latent'], pipe.calls[1]['latent'])
+        budget = measure_latent_residual(pipe.calls[0]['latent'], pipe.calls[-1]['latent'])
         for field, value in budget.items():
             self.assertEqual(samples[0][field], value)
         return pipe, summary, samples[0]
@@ -225,8 +246,33 @@ class GlobalRunnerTests(unittest.TestCase):
                     self.assertEqual(sample['w_metric'], original_sample['w_metric'])
                     self.assertEqual(sample['latent_residual_l2'], original_sample['latent_residual_l2'])
 
+    def test_saliency_runner_uses_short_preview_without_changing_generation_rng(self):
+        args = self.make_args('saliency_aware_tree_ring')
+        pipe, summary, sample = self.run_synthetic_sample(args)
+        self.assertEqual(len(pipe.calls), 3)
+        base = pipe.calls[0]['latent']
+        self.assertTrue(torch.equal(pipe.calls[1]['latent'], base))
+        self.assertEqual(pipe.calls[1]['parameters']['num_inference_steps'], 10)
+        self.assertTrue(torch.equal(pipe.calls[1]['rng_state'], pipe.calls[2]['rng_state']))
+        saliency = torch.full((1, 1, 16, 16), 0.75)
+        mask = get_watermarking_mask(base, args, 'cpu')
+        key = pipe.random_latents[0]
+        key_fft = torch.fft.fftshift(torch.fft.fft2(key), dim=(-1, -2))
+        expected = inject_watermark(base, mask, key_fft, args, saliency)
+        self.assertTrue(torch.equal(pipe.calls[2]['latent'], expected))
+        self.assertEqual(summary['run_identity']['method_parameters'], {
+            'preview_steps': 10,
+            'background_strength': 1.5,
+            'foreground_strength': 0.2,
+            'power': 2.0,
+        })
+        self.assertEqual(sample['saliency']['source'], 'short_ddim_preview')
+        self.assertEqual(sample['saliency']['map_shape'], [1, 1, 16, 16])
+        self.assertEqual(sample['saliency']['map_min'], 0.75)
+        self.assertEqual(sample['saliency']['map_max'], 0.75)
+
     def test_parser_rejects_unimplemented_methods(self):
-        for method in ('saliency_aware_tree_ring', 'no_watermark'):
+        for method in ('no_watermark',):
             with self.subTest(method=method), contextlib.redirect_stderr(io.StringIO()):
                 with self.assertRaises(SystemExit):
                     self.make_args(method)

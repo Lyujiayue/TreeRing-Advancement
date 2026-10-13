@@ -16,6 +16,16 @@ def alpha_token(alpha):
     return repr(alpha).replace(".", "p").replace("-", "m").replace("+", "p")
 
 
+def saliency_token_suffix(parameters):
+    """Losslessly identify one explicit Saliency development configuration."""
+    def token(value):
+        return repr(value).replace(".", "p").replace("-", "m").replace("+", "p")
+    return (f"_pv{parameters['preview_steps']}"
+            f"_bg{token(parameters['background_strength'])}"
+            f"_fg{token(parameters['foreground_strength'])}"
+            f"_pw{token(parameters['power'])}")
+
+
 def build_run_identity(args):
     """Validate purpose/range/steps before any output deletion or model I/O."""
     from experiment_records import FROZEN_PROMPT_SPLITS
@@ -36,13 +46,20 @@ def build_run_identity(args):
         raise ValueError("Full runs must cover the entire frozen split")
 
     method_parameters = validate_method_configuration(
-        args.method_name, getattr(args, "global_alpha", None)
+        args.method_name,
+        getattr(args, "global_alpha", None),
+        saliency_preview_steps=getattr(args, "saliency_preview_steps", None),
+        saliency_background_strength=getattr(args, "saliency_background_strength", None),
+        saliency_foreground_strength=getattr(args, "saliency_foreground_strength", None),
+        saliency_power=getattr(args, "saliency_power", None),
     )
     name = expected_run_name(
         args.method_name, args.prompt_split, args.replicate_id, args.attack_name
     )
-    if method_parameters:
+    if args.method_name == "globally_weaker_tree_ring":
         name += "_a" + alpha_token(method_parameters["alpha"])
+    elif args.method_name == "saliency_aware_tree_ring":
+        name += saliency_token_suffix(method_parameters)
     name += f"_{purpose}"
     # Steps distinguish one-step format checks from normal-step E2E probes.
     name += (f"_s{args.start}_e{args.end}"

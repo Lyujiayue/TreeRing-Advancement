@@ -23,9 +23,10 @@ def make_args(**overrides):
         'w_injection': 'complex',
         'method_name': 'original_tree_ring',
         'global_alpha': None,
-        'saliency_background_strength': 1.5,
-        'saliency_foreground_strength': 0.2,
-        'saliency_power': 2.0,
+        'saliency_preview_steps': None,
+        'saliency_background_strength': None,
+        'saliency_foreground_strength': None,
+        'saliency_power': None,
     }
     values.update(overrides)
     return SimpleNamespace(**values)
@@ -56,6 +57,9 @@ class WatermarkInjectionTests(unittest.TestCase):
 
     def test_adaptive_injection_matches_standard_key(self):
         saliency = torch.rand(2, 1, 16, 16)
+        self.args.saliency_background_strength = 1.5
+        self.args.saliency_foreground_strength = 0.2
+        self.args.saliency_power = 2.0
         standard = inject_watermark(
             self.latents, self.mask, self.patch, self.args
         )
@@ -73,6 +77,32 @@ class WatermarkInjectionTests(unittest.TestCase):
         self.assertTrue(torch.allclose(
             injected_fft[self.mask], standard_fft[self.mask], atol=1e-4, rtol=1e-4
         ))
+
+    def test_saliency_method_requires_map_and_uses_explicit_parameters(self):
+        args = make_args(
+            method_name='saliency_aware_tree_ring',
+            saliency_preview_steps=10,
+            saliency_background_strength=1.5,
+            saliency_foreground_strength=0.2,
+            saliency_power=2.0,
+        )
+        saliency = torch.rand(2, 1, 16, 16)
+        expected = inject_watermark(
+            self.latents, self.mask, self.patch, args, saliency
+        )
+        actual = inject_watermark_for_method(
+            self.latents, self.mask, self.patch, args, saliency
+        )
+        self.assertTrue(torch.equal(actual, expected))
+        with self.assertRaises(ValueError):
+            inject_watermark_for_method(
+                self.latents, self.mask, self.patch, args
+            )
+        saliency[0, 0, 0, 0] = float('nan')
+        with self.assertRaises(ValueError):
+            inject_watermark_for_method(
+                self.latents, self.mask, self.patch, args, saliency
+            )
 
     def test_original_pattern_modes_are_preserved(self):
         zeros_args = make_args(w_pattern='zeros')

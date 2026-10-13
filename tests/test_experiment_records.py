@@ -1,5 +1,6 @@
 ﻿import hashlib
 import json
+import math
 import tempfile
 import unittest
 from pathlib import Path
@@ -41,10 +42,64 @@ class ExperimentRecordTests(unittest.TestCase):
                     validate_method_configuration("globally_weaker_tree_ring", alpha)
         with self.assertRaises(ValueError):
             validate_method_configuration("original_tree_ring", 0.5)
-        for method in ("saliency_aware_tree_ring", "no_watermark", "unknown"):
+        for method in ("no_watermark", "unknown"):
             with self.subTest(method=method):
                 with self.assertRaises(ValueError):
                     validate_method_configuration(method)
+
+    def test_saliency_parameters_are_explicit_finite_and_method_specific(self):
+        parameters = validate_method_configuration(
+            "saliency_aware_tree_ring",
+            saliency_preview_steps=10,
+            saliency_background_strength=1.5,
+            saliency_foreground_strength=0.2,
+            saliency_power=2.0,
+        )
+        self.assertEqual(parameters, {
+            "preview_steps": 10,
+            "background_strength": 1.5,
+            "foreground_strength": 0.2,
+            "power": 2.0,
+        })
+        signed_zero_parameters = validate_method_configuration(
+            "saliency_aware_tree_ring",
+            saliency_preview_steps=10,
+            saliency_background_strength=-0.0,
+            saliency_foreground_strength=-0.0,
+            saliency_power=2.0,
+        )
+        for field in ("background_strength", "foreground_strength"):
+            self.assertEqual(signed_zero_parameters[field], 0.0)
+            self.assertEqual(math.copysign(1.0, signed_zero_parameters[field]), 1.0)
+        invalid = (
+            {"saliency_preview_steps": 0},
+            {"saliency_preview_steps": True},
+            {"saliency_background_strength": -0.1},
+            {"saliency_foreground_strength": float("nan")},
+            {"saliency_power": 0},
+            {"saliency_power": float("inf")},
+            {"saliency_background_strength": 10 ** 400},
+        )
+        valid = dict(
+            saliency_preview_steps=10,
+            saliency_background_strength=1.5,
+            saliency_foreground_strength=0.2,
+            saliency_power=2.0,
+        )
+        for override in invalid:
+            with self.subTest(override=override), self.assertRaises(ValueError):
+                validate_method_configuration(
+                    "saliency_aware_tree_ring", **dict(valid, **override)
+                )
+        with self.assertRaises(ValueError):
+            validate_method_configuration(
+                "original_tree_ring", saliency_preview_steps=10
+            )
+        with self.assertRaises(ValueError):
+            validate_method_configuration(
+                "globally_weaker_tree_ring", 0.5,
+                saliency_preview_steps=10,
+            )
 
     def test_global_sample_identity_and_run_name(self):
         identity = build_sample_identity(

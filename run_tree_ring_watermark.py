@@ -1,5 +1,7 @@
 import argparse
+import contextlib
 import hashlib
+import random
 try:
     import wandb
 except ImportError:
@@ -10,6 +12,7 @@ from statistics import mean, stdev
 from sklearn import metrics
 import torch
 import json
+import numpy as np
 from pathlib import Path
 from inverse_stable_diffusion import InversableStableDiffusionPipeline
 from diffusers import DDIMScheduler
@@ -48,11 +51,59 @@ def tensor_fingerprint(tensor):
     return digest.hexdigest()
 
 
+def get_saliency_weight_from_tensor(images):
+    """Load the optional OpenCV Saliency implementation only when requested."""
+    from significance_detection import get_saliency_weight_from_tensor as implementation
+    return implementation(images)
+
+
+@contextlib.contextmanager
+def preserve_random_state(device):
+    """Keep the Saliency preview from changing paired generation randomness."""
+    python_state = random.getstate()
+    numpy_state = np.random.get_state()
+    devices = [torch.cuda.current_device()] if device == 'cuda' else []
+    with torch.random.fork_rng(devices=devices):
+        try:
+            yield
+        finally:
+            random.setstate(python_state)
+            np.random.set_state(numpy_state)
+
+
+def build_saliency_map(pipe, prompt, base_latents, args, device):
+    """Create the declared short DDIM preview and normalized spatial map."""
+    if args.method_name != 'saliency_aware_tree_ring':
+        return None
+    with preserve_random_state(device), torch.no_grad():
+        preview = pipe(
+            prompt,
+            num_images_per_prompt=args.num_images,
+            guidance_scale=args.guidance_scale,
+            num_inference_steps=args.saliency_preview_steps,
+            height=args.image_length,
+            width=args.image_length,
+            latents=base_latents.clone(),
+        ).images[0]
+    values = get_saliency_weight_from_tensor([preview])
+    saliency_map = torch.from_numpy(values).to(device=device)
+    if saliency_map.shape[0] != base_latents.shape[0] or saliency_map.shape[1] != 1:
+        raise ValueError('Saliency preview returned an incompatible batch shape')
+    if not torch.isfinite(saliency_map).all():
+        raise ValueError('Saliency preview returned non-finite values')
+    return saliency_map
+
+
 def main(args):
     run_started_at = utc_now_iso()
     run_started_perf = time.perf_counter()
     method_parameters = validate_method_configuration(
-        args.method_name, getattr(args, 'global_alpha', None)
+        args.method_name,
+        getattr(args, 'global_alpha', None),
+        saliency_preview_steps=getattr(args, 'saliency_preview_steps', None),
+        saliency_background_strength=getattr(args, 'saliency_background_strength', None),
+        saliency_foreground_strength=getattr(args, 'saliency_foreground_strength', None),
+        saliency_power=getattr(args, 'saliency_power', None),
     )
     attack_parameters = validate_attack_configuration(
         args.attack_name,
@@ -178,6 +229,10 @@ def main(args):
             latents=init_latents_no_w,
             )
         orig_image_no_w = outputs_no_w.images[0]
+
+        saliency_map = build_saliency_map(
+            pipe, current_prompt, base_latents, args, device
+        )
         
         # generation with watermarking
         init_latents_w = base_latents.clone()
@@ -191,7 +246,10 @@ def main(args):
         }
 
         # inject watermark
-        init_latents_w = inject_watermark_for_method(init_latents_w, watermarking_mask, gt_patch, args)
+        init_latents_w = inject_watermark_for_method(
+            init_latents_w, watermarking_mask, gt_patch, args,
+            saliency_map=saliency_map,
+        )
         latent_residual = measure_latent_residual(base_latents, init_latents_w)
 
         outputs_w = pipe(
@@ -274,6 +332,16 @@ def main(args):
             "w_sim": w_sim,
             "sample_duration_seconds": time.perf_counter() - sample_started_perf,
         }
+        if saliency_map is not None:
+            saliency_float = saliency_map.detach().float()
+            sample_record['saliency'] = {
+                'source': 'short_ddim_preview',
+                'map_sha256': tensor_fingerprint(saliency_map),
+                'map_shape': list(saliency_map.shape),
+                'map_min': float(saliency_float.min().item()),
+                'map_max': float(saliency_float.max().item()),
+                'map_mean': float(saliency_float.mean().item()),
+            }
         if save_images:
             sample_record['image_artifacts'] = image_artifacts
         sample_record['clip_similarity_available'] = args.reference_model is not None
@@ -391,6 +459,14 @@ def build_parser():
         help='Explicit residual strength in [0, 1], required only for Global; '
              'no default or pilot-selected value is supplied.',
     )
+    parser.add_argument('--saliency_preview_steps', type=int, default=None,
+                        help='Explicit short DDIM preview steps, required only for Saliency.')
+    parser.add_argument('--saliency_background_strength', type=float, default=None,
+                        help='Explicit non-salient residual strength, required only for Saliency.')
+    parser.add_argument('--saliency_foreground_strength', type=float, default=None,
+                        help='Explicit salient residual strength, required only for Saliency.')
+    parser.add_argument('--saliency_power', type=float, default=None,
+                        help='Explicit positive map exponent, required only for Saliency.')
     parser.add_argument(
         '--attack_name',
         required=True,

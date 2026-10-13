@@ -228,6 +228,8 @@ def inject_watermark(latents, mask, gt_patch, args, saliency_map=None):
         raise ValueError('saliency_map batch size must be 1 or match the latent batch size')
 
     saliency_map = saliency_map.to(device=latents.device, dtype=latents.dtype)
+    if not torch.isfinite(saliency_map).all():
+        raise ValueError('saliency_map must contain only finite values')
     if saliency_map.shape[-2:] != latents.shape[-2:]:
         saliency_map = F.interpolate(
             saliency_map,
@@ -271,11 +273,24 @@ def inject_watermark(latents, mask, gt_patch, args, saliency_map=None):
 
     return latents_final.to(latents.dtype)
 
-def inject_watermark_for_method(latents, mask, gt_patch, args):
-    """Apply Original or uniformly scale its residual without changing inputs."""
+def inject_watermark_for_method(latents, mask, gt_patch, args, saliency_map=None):
+    """Apply the explicitly configured method without changing shared inputs."""
     parameters = validate_method_configuration(
-        args.method_name, getattr(args, 'global_alpha', None)
+        args.method_name,
+        getattr(args, 'global_alpha', None),
+        saliency_preview_steps=getattr(args, 'saliency_preview_steps', None),
+        saliency_background_strength=getattr(args, 'saliency_background_strength', None),
+        saliency_foreground_strength=getattr(args, 'saliency_foreground_strength', None),
+        saliency_power=getattr(args, 'saliency_power', None),
     )
+    if args.method_name == 'saliency_aware_tree_ring':
+        if saliency_map is None:
+            raise ValueError('saliency_aware_tree_ring requires an explicit saliency map')
+        return inject_watermark(
+            latents, mask, gt_patch, args, saliency_map=saliency_map
+        )
+    if saliency_map is not None:
+        raise ValueError('saliency_map is only valid for saliency_aware_tree_ring')
     original = inject_watermark(latents, mask, gt_patch, args)
     if args.method_name == 'original_tree_ring':
         return original
