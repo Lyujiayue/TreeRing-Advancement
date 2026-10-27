@@ -6,6 +6,46 @@ This code is the official implementation of [Tree-Ring Watermarks](http://arxiv.
 
 If you have any questions, feel free to email Yuxin (<ywen@umd.edu>).
 
+## TreeRing-Advancement status
+
+The active advancement work is on branch `stage-c-record-identity`. Commit
+`1a6c191f6e8d87958788cd6d615e63e07d21d1da` is the verified pre-Stage-F
+baseline; later Stage F implementation commits build from it.
+
+- Stages B, C, D, and E are complete.
+- The 32-sample Development image-generation and identity checks are complete
+  for the No-Watermark reference, Original Tree-Ring, Globally Weaker
+  Tree-Ring, and Saliency-Aware Tree-Ring.
+- The current stage is Stage F: implement, validate, and freeze the image
+  quality metrics before the 200-sample Pilot.
+- Existing paired RGB PNGs must be reused for Stage F. Diffusion generation
+  must not be repeated merely to calculate CLIP, LPIPS, PSNR, or SSIM.
+- Development parameters, including the current Saliency probe values, are
+  implementation checks rather than final parameters or paper conclusions.
+
+The project server does not contain the fixed 5,000-image MS-COCO reference
+set required by the baseline FID protocol. The 32-sample Development images
+are not a valid substitute for that reference set, and FID must not be
+estimated from them. The protocol owner approved omitting FID on 2026-10-21
+because adding it would require importing an unverified reference package and
+running a separate large-scale generation experiment. The decision and its
+pilot-independent rationale are recorded in protocol amendment v1.1.
+
+The shortest controlled path to completion is:
+
+1. Finish the offline Stage F evaluator for CLIP, LPIPS, PSNR, and SSIM and
+   validate it on controlled fixtures and the preserved Development PNGs.
+2. Freeze the Pilot parameter grids and decision rules before examining Pilot
+   outcomes.
+3. Run and audit the 200-sample Pilot, then complete and approve amendment
+   v1.1, including the FID decision and selected parameters/threshold.
+4. Run the formal and robustness experiments without changing the frozen
+   protocol, then perform the pre-specified paired analysis.
+
+See `docs/protocols/` for the controlled protocol, record schema, execution
+runbook, and amendment template. The original usage examples below are kept
+for upstream reproducibility; they do not authorize Advancement experiments.
+
 ## About
 We propose Tree-Ring Watermarking to watermark diffusion model outputs. Tree-Ring Watermarking chooses the initial noise array so that its Fourier transform contains a carefully constructed pattern near its center. This pattern is called the key. This initial noise vector is then converted into an image using the standard diffusion pipeline with no modifications. To detect the watermark in an image, the diffusion model is inverted to retrieve the original noise array used for generation. This array is then checked to see whether the key is present.
 
@@ -35,8 +75,16 @@ For more adversarial cases, see [here](scripts/tree_ring.sh).
 
 For other watermark types mentioned in the paper, you can check [scripts/](scripts/).
 
-### Calculate FID
-You can download 5000 COCO examples used in the paper [here](https://drive.google.com/drive/folders/1saWx-B3vJxzspJ-LaXSEn5Qjm8NIs3r0?usp=sharing). Feel free to add more data or other datasets according to the format of `fid_outputs/coco/meta_data.json`.
+### Legacy upstream FID workflow
+
+The original repository used 5,000 COCO examples available
+[here](https://drive.google.com/drive/folders/1saWx-B3vJxzspJ-LaXSEn5Qjm8NIs3r0?usp=sharing), following the format of
+`fid_outputs/coco/meta_data.json`.
+
+This legacy command generates new images and may fetch Inception weights. It
+is not the frozen TreeRing-Advancement Stage F evaluator and must not be run on
+the project server under the current constraints. In particular, do not use
+the 32-sample Development PNGs to produce a replacement FID value.
 
 Then, to calculate FID, you may run:
 ```
