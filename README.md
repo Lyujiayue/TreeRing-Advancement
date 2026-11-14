@@ -35,11 +35,13 @@ because adding it would require importing an unverified reference package and
 running a separate large-scale generation experiment. The decision and its
 pilot-independent rationale are recorded in protocol amendment v1.1.
 
-The shortest controlled path to completion is now:
+The Pilot grids and outcome-independent selection rules are frozen in
+`docs/protocols/pilot_freeze_v1.md`; this freeze does not authorize GPU
+execution. The shortest controlled path to completion is now:
 
-1. Freeze the Pilot parameter grids and decision rules before examining Pilot
-   outcomes.
-2. Run and audit the 200-sample Pilot, then complete and approve amendment
+1. Deploy and CPU-gate the frozen Pilot planning/selection implementation.
+2. Obtain separate execution approval, then run and audit the 200-sample Pilot
+   without changing the frozen grids or rules; complete and approve amendment
    v1.1, including the FID decision and selected parameters/threshold.
 3. Run the formal and robustness experiments without changing the frozen
    protocol, then perform the pre-specified paired analysis.

@@ -11,6 +11,7 @@ This directory is the controlled index for the TreeRing-Advancement experimental
 | [Baseline Experiment Protocol v1](baseline_experiment_protocol_v1.md) | Freezes the research question, methods, model and generation settings, data splits, scales, fairness rules, metrics, and robustness conditions. | Complete; amendment v1.1 is still required before formal execution. |
 | [Experiment Record Schema v1](experiment_record_schema_v1.md) | Defines the current summary JSON and per-sample JSONL records, their semantics, write behavior, and known omissions. | Implemented and smoke-tested; required identity and formal-analysis fields remain to be added. |
 | [Development and Execution Runbook v1](development_and_execution_runbook_v1.md) | Defines safe development, offline deployment, execution, validation, recovery, artifact preservation, and stage gates. | Complete for the current baseline; commands for new methods must be frozen in amendment v1.1. |
+| [Pilot Freeze v1](pilot_freeze_v1.md) | Freezes the Pilot population, ten candidate runs, shared 1%-FPR threshold rule, deterministic method-selection rule, uncertainty procedure, and stop conditions before Pilot outcomes exist. | Frozen design; does not authorize GPU execution. |
 | [Protocol Amendment v1.1 Template](protocol_amendment_v1_1_template.md) | Captures all remaining implementation, seed, tuning, threshold, metric, robustness, commit, evidence, command, and approval decisions. | Template only; must be completed and approved before any formal experiment. |
 | `README.md` | Provides the protocol map, readiness summary, and outstanding work. | Current. |
 
@@ -20,19 +21,23 @@ This directory is the controlled index for the TreeRing-Advancement experimental
 - End-to-end baseline smoke test on an NVIDIA B200.
 - Baseline Experiment Protocol v1.
 - Frozen prompt data and server deployment.
-- Seven local and server unit tests.
-- Experiment record schema.
-- One-sample B200 record-format smoke test.
+- Explicit experiment identity, run naming, paired PNG preservation, Global,
+  Saliency, and offline quality-metric implementations.
+- Complete 32-sample Development identity and quality gates.
+- Frozen CLIP, LPIPS, PSNR, and SSIM implementation with reviewed B200
+  evidence; FID omission approved before Pilot.
+- Pilot candidate grids and outcome-independent selection rules frozen before
+  any Pilot run.
 
 ## Work required before formal experiments
 
-- Add explicit `source_row_id`, `method_name`, `replicate_id`, and `protocol_version` to every per-sample record. The full required field set is listed in the schema document.
-- Implement Globally Weaker Tree-Ring.
-- Complete end-to-end validation of Saliency-Aware Tree-Ring.
-- Implement and freeze CLIP, LPIPS, PSNR, SSIM, and FID.
-- Calibrate and freeze the detection threshold using the pilot split only.
+- Run and audit the approved 200-sample Pilot candidate matrix.
+- Apply the already frozen shared-threshold and selection rules without
+  outcome-driven changes.
+- Add the selected fixed-threshold fields required for Formal records.
 - Complete and approve protocol amendment v1.1.
-- Complete the 32-sample development experiment and the 200-sample pilot.
+- Freeze the remaining formal seeds, robustness verification, statistical
+  analysis, and placeholder-free commands.
 
 Formal runs are not authorized until every applicable stage gate in the runbook is satisfied and amendment v1.1 contains no unresolved placeholders.
 

@@ -61,8 +61,8 @@ Frozen definition: `z_global = z + alpha * (z_original - z)`.
 
 | Item | Final entry |
 |---|---|
-| Alpha candidate grid | [Enumerate every value] |
-| Pilot selection rule | [Pre-specified deterministic rule, tie-breaker, and metric] |
+| Alpha candidate grid | `0.25`, `0.5`, `0.75`; No-Watermark and Original supply the alpha 0 and 1 endpoints without duplicate Global runs |
+| Pilot selection rule | Apply the one shared Pilot threshold. Feasible only if fixed-threshold TPR is at least Original minus 0.05, mean paired CLIP delta is at least Original minus 0.01, and mean LPIPS is strictly lower than Original. Select minimum mean LPIPS; ties use higher CLIP delta, higher SSIM, higher PSNR, lower residual RMS, then lexical label. If none is feasible, stop without a selection. |
 | Final alpha | [Value] |
 | Perturbation budget definition | [Exact RMS/L2 formula, axes, precision, and aggregation] |
 | Pilot realized RMS/L2 | [Estimate and interval/distribution] |
@@ -79,8 +79,8 @@ Frozen definition: `z_global = z + alpha * (z_original - z)`.
 
 | Item | Final entry |
 |---|---|
-| Candidate grid | [Enumerate the full Cartesian or staged grid] |
-| Pilot selection rule | [Pre-specified deterministic rule and tie-breaker] |
+| Candidate grid | Fixed preview=10. Exact `(background, foreground, power)` list: `(1.5,0.2,2.0)`, `(1.0,0.2,2.0)`, `(0.5,0.2,2.0)`, `(1.0,0.0,2.0)`, `(0.5,0.0,2.0)`, `(1.0,0.2,1.0)` |
+| Pilot selection rule | Same feasibility rule and deterministic tie-breakers as Global, applied independently. If none is feasible, stop without a selection or Formal authorization. |
 | Final parameter values | [All values] |
 | Perturbation budget definition | [Exact RMS/L2 formula] |
 | Pilot realized RMS/L2 | [Estimate and interval/distribution] |
@@ -95,7 +95,7 @@ Frozen definition: `z_global = z + alpha * (z_original - z)`.
 |---|---|
 | Calibration split | Pilot, source rows 1000-1199 |
 | Detection score | Negative watermark distance; larger is stronger evidence |
-| Selection rule | [Exact rule, target, interpolation convention, and tie-breaker] |
+| Selection rule | Deduplicate to the 200 unique Pilot No-Watermark scores; sort ascending and set `threshold = math.nextafter(s_(198), +infinity)`, where `s_(198)` is the 198th one-based order statistic. Predict positive for `score >= threshold`. Ties are conservative; empirical FPR cannot exceed 1%. Use one shared threshold for all methods. |
 | Final threshold | [Numeric value with precision] |
 | Pilot FPR | [Value and 95% CI] |
 | Pilot TPR | [Value and 95% CI] |
