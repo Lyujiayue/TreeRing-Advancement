@@ -9,15 +9,19 @@ If you have any questions, feel free to email Yuxin (<ywen@umd.edu>).
 ## TreeRing-Advancement status
 
 The active advancement work is on branch `stage-c-record-identity`. Commit
-`1a6c191f6e8d87958788cd6d615e63e07d21d1da` is the verified pre-Stage-F
-baseline; later Stage F implementation commits build from it.
+`084658ed1d3bc6d39094f7faaa07816a938cfb25` implements the frozen Stage F
+offline quality metrics on top of the verified pre-Stage-F baseline
+`1a6c191f6e8d87958788cd6d615e63e07d21d1da`.
 
 - Stages B, C, D, and E are complete.
 - The 32-sample Development image-generation and identity checks are complete
   for the No-Watermark reference, Original Tree-Ring, Globally Weaker
   Tree-Ring, and Saliency-Aware Tree-Ring.
-- The current stage is Stage F: implement, validate, and freeze the image
-  quality metrics before the 200-sample Pilot.
+- Stage F is complete. The frozen CLIP, LPIPS, PSNR, and SSIM implementation
+  passed the local and server CPU gates, a one-pair B200 smoke, and strict
+  read-only evaluation of the preserved 32-pair Original, Global alpha=0.5,
+  and Saliency Development runs. The final 32x3 evidence package was reviewed
+  and archived locally on 2026-11-14.
 - Existing paired RGB PNGs must be reused for Stage F. Diffusion generation
   must not be repeated merely to calculate CLIP, LPIPS, PSNR, or SSIM.
 - Development parameters, including the current Saliency probe values, are
@@ -31,16 +35,18 @@ because adding it would require importing an unverified reference package and
 running a separate large-scale generation experiment. The decision and its
 pilot-independent rationale are recorded in protocol amendment v1.1.
 
-The shortest controlled path to completion is:
+The shortest controlled path to completion is now:
 
-1. Finish the offline Stage F evaluator for CLIP, LPIPS, PSNR, and SSIM and
-   validate it on controlled fixtures and the preserved Development PNGs.
-2. Freeze the Pilot parameter grids and decision rules before examining Pilot
+1. Freeze the Pilot parameter grids and decision rules before examining Pilot
    outcomes.
-3. Run and audit the 200-sample Pilot, then complete and approve amendment
+2. Run and audit the 200-sample Pilot, then complete and approve amendment
    v1.1, including the FID decision and selected parameters/threshold.
-4. Run the formal and robustness experiments without changing the frozen
+3. Run the formal and robustness experiments without changing the frozen
    protocol, then perform the pre-specified paired analysis.
+
+No 200-sample Pilot run has started. The Development values are descriptive
+implementation evidence only and must not be used as final parameter choices
+or paper conclusions.
 
 See `docs/protocols/` for the controlled protocol, record schema, execution
 runbook, and amendment template. The original usage examples below are kept

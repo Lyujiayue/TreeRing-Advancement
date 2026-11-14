@@ -48,14 +48,45 @@ median, minimum, and maximum. Exact-match PSNR observations are counted and
 reported separately. Formal analysis must retain replicate identity rather
 than pooling five replicates as 5,000 independent observations.
 
-## Execution boundary
+## Execution and evidence boundary
 
 `scripts/quality_validation.py` requires explicit input paths, explicit local
 weight paths, and a new output directory. It first verifies summary/JSONL
 agreement and the existing paired-image contract. Missing, extra, altered,
 non-RGB, non-PNG, non-finite, or identity-incomplete inputs fail closed.
 
-The current local implementation does not authorize server execution. Server
-package/weight inventory, CPU gate, and any GPU-assisted metric evaluation
-remain separate reviewed steps. No dependency installation or automatic model
-download is permitted.
+Server execution remains a separately approved step. No dependency
+installation or automatic model download is permitted, and quality evaluation
+must never regenerate diffusion images.
+
+The reviewed Stage F execution is complete at implementation commit
+`084658ed1d3bc6d39094f7faaa07816a938cfb25`. The local and server CPU suites
+passed 67 tests, the three fixed assets passed size and SHA-256 validation, and
+the repository-frozen LPIPS implementation matched official `lpips==0.1.4` on
+three fixtures with maximum absolute difference 0.0. A one-pair B200 smoke
+then passed before the preserved Development runs were evaluated.
+
+The final read-only Development evaluation used one NVIDIA B200, driver
+590.48.01, and the existing server environment. Each of the Original,
+Globally Weaker alpha=0.5, and Saliency-Aware runs contributed exactly 32
+paired images. All three reports record CUDA/FP32 CLIP and LPIPS execution,
+the frozen weight hashes, immutable source-summary/JSONL/PNG hashes, and the
+same No-Watermark reference images. The only console warning was the already
+reviewed timm import deprecation.
+
+| Development run | CLIP No-W mean | CLIP W mean | Paired delta mean | LPIPS mean | PSNR mean (dB) | SSIM mean |
+|---|---:|---:|---:|---:|---:|---:|
+| Original | 0.3668062855 | 0.3635695009 | -0.0032367846 | 0.5279564308 | 13.6259966542 | 0.4710933691 |
+| Global alpha=0.5 | 0.3668062855 | 0.3633200470 | -0.0034862384 | 0.4037110256 | 16.9494370310 | 0.5810611632 |
+| Saliency | 0.3668062855 | 0.3639491461 | -0.0028571393 | 0.5281274477 | 13.6421690542 | 0.4707778081 |
+
+These are descriptive Development values, not parameter-selection results or
+paper conclusions. The 200-sample Pilot has not started.
+
+The server strict status is `STAGE_F_32X3_STRICT_READONLY_ACCEPT_PASS`; the
+independent local package status is
+`STAGE_F_32X3_LOCAL_PACKAGE_REVIEW_PASS`. The evidence archive contains 20
+regular, hash-verified members. Its tar.gz SHA-256 is
+`12188ffdbd8adc75a26bc8b99e69d954ff4b5561956f6b44ed02e108db78ba45`,
+and its package-manifest SHA-256 is
+`fcabf09bc5acb541a07ffc9ed3f4d1b0c39165c543687cfca2f4039c0d80741e`.
