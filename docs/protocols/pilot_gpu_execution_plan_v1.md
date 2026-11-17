@@ -4,8 +4,11 @@
 
 This document defines the outcome-independent execution budget, order,
 exclusive paths, failure preservation, and acceptance sequence for the frozen
-200-prompt Pilot at commit
-`7e8ee072e59ecf59449beb076716617361e8b30d`.
+200-prompt Pilot. Commit
+`7e8ee072e59ecf59449beb076716617361e8b30d` is the Pilot freeze base. The
+actual execution commit must be a separately reviewed full descendant SHA and
+is supplied explicitly to preflight; a source file cannot safely hard-code the
+hash of the commit that contains itself.
 
 It is a review document only. It does not authorize GPU execution, Formal
 execution, instance start or stop, dependency or environment changes, model or
@@ -22,7 +25,8 @@ not add, remove, reorder based on outcomes, or change any candidate.
 | Item | Required value |
 |---|---|
 | Branch | `stage-c-record-identity` |
-| Commit | `7e8ee072e59ecf59449beb076716617361e8b30d` |
+| Pilot freeze base | `7e8ee072e59ecf59449beb076716617361e8b30d` |
+| Runtime commit | Explicit reviewed full SHA; must descend from the Pilot freeze base |
 | Worktree | clean |
 | Pilot prompts | source rows 1000-1199, exactly 200 |
 | Prompt SHA-256 | `1455baf5b73b143aa07227c2dcfab96d5658c29e816fd9ddea33b591e7b70f3b` |

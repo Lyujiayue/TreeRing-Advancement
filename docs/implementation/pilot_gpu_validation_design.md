@@ -15,10 +15,12 @@ hash before frozen selection. Server synchronization and GPU use require later,
 separately scoped approvals.
 
 The tool must consume the committed Pilot specification rather than carry an
-independent grid. Its plan, preflight, execution reports, acceptance, and
-observation assembly must all bind commit
-`7e8ee072e59ecf59449beb076716617361e8b30d` and
-`treering-pilot-freeze-v1`.
+independent grid. Commit
+`7e8ee072e59ecf59449beb076716617361e8b30d` is the frozen design base. Plan,
+preflight, execution reports, acceptance, and observation assembly bind a
+separately reviewed full runtime commit supplied at invocation and verify that
+it descends from this base. The runtime commit is never represented by a
+self-referential constant inside the commit being validated.
 
 ## Proposed modes
 

@@ -32,7 +32,11 @@ from scripts.validate_quality_assets import validate as validate_quality_assets
 
 
 PLAN_VERSION = "treering-pilot-gpu-execution-plan-v1"
-EXPECTED_HEAD = "7e8ee072e59ecf59449beb076716617361e8b30d"
+PILOT_FREEZE_BASE_HEAD = "7e8ee072e59ecf59449beb076716617361e8b30d"
+# Backward-compatible test/default identity. Live and artifact-validation modes
+# bind an explicit reviewed runtime commit instead of attempting an impossible
+# self-referential commit constant.
+EXPECTED_HEAD = PILOT_FREEZE_BASE_HEAD
 SERVER_REPO = Path("/public/home/rxa-jj-ljq/projects/TreeRing-Advancement")
 SERVER_TRANSFER = Path("/public/home/rxa-jj-ljq/TR_Transfer")
 SERVER_MODEL = Path("/public/home/rxa-jj-ljq/models/stable-diffusion-2-1-base")
@@ -184,7 +188,14 @@ def quality_command(candidate, evidence_root):
     ]
 
 
-def build_plan(evidence_root=None):
+def _validate_full_sha(value, name="expected head"):
+    require(isinstance(value, str) and re.fullmatch(r"[0-9a-f]{40}", value),
+            f"Invalid {name}")
+    return value
+
+
+def build_plan(evidence_root=None, expected_head=EXPECTED_HEAD):
+    expected_head = _validate_full_sha(expected_head)
     evidence_root = Path(evidence_root or (
         SERVER_TRANSFER / "pilot-gpu-execution_7e8ee07_<UTC-YYYYMMDDTHHMMSSZ>"
     ))
@@ -207,7 +218,8 @@ def build_plan(evidence_root=None):
     return {
         "status": "PILOT_GPU_PLAN_PASS",
         "plan_version": PLAN_VERSION,
-        "expected_head": EXPECTED_HEAD,
+        "expected_head": expected_head,
+        "pilot_freeze_base_head": PILOT_FREEZE_BASE_HEAD,
         "execution_started": False,
         "execution_authorized": False,
         "formal_authorized": False,
@@ -240,7 +252,7 @@ def static_preflight(
     repo = Path(repo).resolve()
     transfer_root = Path(transfer_root).resolve()
     evidence_root = Path(evidence_root).resolve()
-    require(expected_head == EXPECTED_HEAD, "Unexpected Pilot implementation commit")
+    expected_head = _validate_full_sha(expected_head)
     require(repo.is_dir() and not repo.is_symlink(), "Repository path is invalid")
     require(transfer_root.is_dir() and not transfer_root.is_symlink(), "Transfer root is invalid")
     require(evidence_root.parent == transfer_root, "Evidence root must be a direct child of transfer root")
@@ -249,8 +261,14 @@ def static_preflight(
 
     state = git_state if git_state is not None else get_git_state(repo)
     require(state.get("branch") == "stage-c-record-identity", "Pilot branch mismatch")
-    require(state.get("commit") == EXPECTED_HEAD, "Pilot Git commit mismatch")
+    require(state.get("commit") == expected_head, "Pilot Git commit mismatch")
     require(state.get("dirty") is False, "Pilot worktree is dirty")
+    if git_state is None:
+        ancestry = subprocess.run(
+            ["git", "merge-base", "--is-ancestor", PILOT_FREEZE_BASE_HEAD, expected_head],
+            cwd=repo, check=False, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        )
+        require(ancestry.returncode == 0, "Runtime commit does not descend from Pilot freeze")
     prompt = _prompt_check(repo)
 
     occupied = []
@@ -264,12 +282,13 @@ def static_preflight(
 
     usage = disk_usage if disk_usage is not None else shutil.disk_usage(transfer_root)
     require(usage.free >= min_free_bytes, "Insufficient persistent storage headroom")
-    plan = build_plan(evidence_root)
+    plan = build_plan(evidence_root, expected_head)
     return {
         "status": "PILOT_GPU_STATIC_PREFLIGHT_PASS",
         "plan_version": PLAN_VERSION,
         "created_at_utc": utc_now_iso(),
-        "expected_head": EXPECTED_HEAD,
+        "expected_head": expected_head,
+        "pilot_freeze_base_head": PILOT_FREEZE_BASE_HEAD,
         "git": state,
         "prompt": prompt,
         "evidence_root": str(evidence_root),
@@ -368,11 +387,12 @@ def live_preflight(
     protected_manifest, protected_manifest_sha256, quality_asset_paths,
     gpu_probe=None, git_state=None, disk_usage=None, model_root=SERVER_MODEL,
     quality_validator=validate_quality_assets, min_free_bytes=MIN_FREE_BYTES,
+    expected_head=EXPECTED_HEAD,
 ):
     """Complete the reviewed live gate without loading diffusion/metric models."""
     static = static_preflight(
         repo, transfer_root, evidence_root, git_state=git_state, disk_usage=disk_usage,
-        min_free_bytes=min_free_bytes,
+        min_free_bytes=min_free_bytes, expected_head=expected_head,
     )
     model = validate_file_manifest(model_manifest, model_manifest_sha256, model_root)
     protected = validate_file_manifest(protected_manifest, protected_manifest_sha256, repo)
@@ -709,9 +729,12 @@ def validate_quality_run(
     return report
 
 
-def build_observation_document(generation_reports, quality_reports):
+def build_observation_document(
+    generation_reports, quality_reports, *, expected_head=EXPECTED_HEAD,
+):
     """Assemble the exact frozen observation schema after all structural gates pass."""
     plan = candidate_plan()
+    expected_head = _validate_full_sha(expected_head)
     require(len(generation_reports) == len(quality_reports) == len(plan),
             "Observation assembly requires exact ten-run inputs")
     canonical_no_w = generation_reports[0]["_vectors"]["no_watermark_distances"]
@@ -734,7 +757,7 @@ def build_observation_document(generation_reports, quality_reports):
             "run_name": expected["run_name"],
             "method_name": expected["method_name"],
             "method_parameters": expected["method_parameters"],
-            "git_commit": EXPECTED_HEAD,
+            "git_commit": expected_head,
             "git_dirty": False,
             "source_row_ids": list(PILOT_SOURCE_ROW_IDS),
             "no_watermark_distances": list(canonical_no_w),
@@ -751,7 +774,7 @@ def build_observation_document(generation_reports, quality_reports):
     return {
         "schema_version": PILOT_OBSERVATION_SCHEMA,
         "prompt_sha256": PILOT_PROMPT_SHA256,
-        "implementation_commit": EXPECTED_HEAD,
+        "implementation_commit": expected_head,
         "source_row_ids": list(PILOT_SOURCE_ROW_IDS),
         "no_watermark_distances": list(canonical_no_w),
         "no_watermark_image_sha256": list(canonical_hashes),
@@ -794,6 +817,9 @@ def assemble_from_source_manifest(path):
     require(manifest.get("schema_version") == "treering-pilot-source-manifest-v1",
             "Source manifest schema mismatch")
     sources = manifest.get("runs")
+    expected_head = _validate_full_sha(manifest.get("expected_head"))
+    require(manifest.get("pilot_freeze_base_head") == PILOT_FREEZE_BASE_HEAD,
+            "Source manifest Pilot freeze base mismatch")
     plan = candidate_plan()
     require(isinstance(sources, list) and len(sources) == len(plan),
             "Source manifest requires exactly ten runs")
@@ -805,15 +831,18 @@ def assemble_from_source_manifest(path):
         generation = validate_generation_run(
             source.get("generation_summary"), source.get("generation_samples"),
             source.get("generation_images"), expected, include_vectors=True,
+            expected_head=expected_head,
         )
         quality = validate_quality_run(
             source.get("quality_summary"), source.get("quality_samples"),
-            expected, generation, include_vectors=True,
+            expected, generation, include_vectors=True, expected_head=expected_head,
         )
         generation_reports.append(generation)
         quality_reports.append(quality)
     accept_generation_runs(generation_reports)
-    return build_observation_document(generation_reports, quality_reports)
+    return build_observation_document(
+        generation_reports, quality_reports, expected_head=expected_head,
+    )
 
 
 def build_parser():
@@ -843,6 +872,7 @@ def build_parser():
     live.add_argument("--alexnet-checkpoint", required=True)
     inspect = subparsers.add_parser("inspect-generation")
     inspect.add_argument("--ordinal", required=True, type=int)
+    inspect.add_argument("--expected-head", required=True)
     inspect.add_argument("--summary", required=True)
     inspect.add_argument("--samples", required=True)
     inspect.add_argument("--images", required=True)
@@ -852,6 +882,7 @@ def build_parser():
     accept.add_argument("--output", required=True)
     quality = subparsers.add_parser("inspect-quality")
     quality.add_argument("--ordinal", required=True, type=int)
+    quality.add_argument("--expected-head", required=True)
     quality.add_argument("--quality-summary", required=True)
     quality.add_argument("--quality-samples", required=True)
     quality.add_argument("--generation-report", required=True)
@@ -886,7 +917,6 @@ def main():
         print(report["status"])
         return
     if args.mode == "live-preflight":
-        require(args.expected_head == EXPECTED_HEAD, "Unexpected Pilot implementation commit")
         report = live_preflight(
             args.repo, args.transfer_root, args.evidence_root,
             model_manifest=args.model_manifest,
@@ -898,6 +928,7 @@ def main():
                 "lpips_v0_1_alex_linear": args.lpips_linear_checkpoint,
                 "torchvision_alexnet_imagenet1k_v1": args.alexnet_checkpoint,
             },
+            expected_head=args.expected_head,
         )
         evidence_root = Path(args.evidence_root).resolve()
         evidence_root.mkdir()
@@ -909,7 +940,8 @@ def main():
     if args.mode == "inspect-generation":
         require(1 <= args.ordinal <= 10, "Generation ordinal must be 1-10")
         report = validate_generation_run(
-            args.summary, args.samples, args.images, candidate_plan()[args.ordinal - 1]
+            args.summary, args.samples, args.images, candidate_plan()[args.ordinal - 1],
+            expected_head=_validate_full_sha(args.expected_head),
         )
         write_new(args.output, report)
         print(report["status"])
@@ -932,6 +964,7 @@ def main():
         report = validate_quality_run(
             args.quality_summary, args.quality_samples,
             candidate_plan()[args.ordinal - 1], generation,
+            expected_head=_validate_full_sha(args.expected_head),
         )
         write_new(args.output, report)
         print(report["status"])

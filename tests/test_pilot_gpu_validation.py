@@ -91,6 +91,32 @@ class PilotGpuValidationTests(unittest.TestCase):
             self.assertFalse(evidence.exists())
             self.assertEqual(len(report["canonical_output_targets"]), 30)
 
+    def test_runtime_commit_is_explicit_not_self_referential_constant(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            repo = self.make_repo(root)
+            transfer = root / "transfer"
+            transfer.mkdir()
+            evidence = transfer / "pilot-gpu-execution_7e8ee07_20261116T120000Z"
+            runtime_head = "f" * 40
+            state = {**self.git_state(), "commit": runtime_head}
+            report = pilot_gpu.static_preflight(
+                repo, transfer, evidence, expected_head=runtime_head,
+                git_state=state, min_free_bytes=0,
+                disk_usage=SimpleNamespace(total=1, used=0, free=1),
+            )
+            self.assertEqual(report["expected_head"], runtime_head)
+            self.assertEqual(report["pilot_freeze_base_head"], pilot_gpu.PILOT_FREEZE_BASE_HEAD)
+            self.assertEqual(
+                pilot_gpu.build_plan(expected_head=runtime_head)["expected_head"], runtime_head
+            )
+            with self.assertRaisesRegex(ValueError, "Invalid expected head"):
+                pilot_gpu.static_preflight(
+                    repo, transfer, evidence, expected_head="4275a5b",
+                    git_state=state, min_free_bytes=0,
+                    disk_usage=SimpleNamespace(total=1, used=0, free=1),
+                )
+
     def test_static_preflight_rejects_occupied_output_and_evidence(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
